@@ -8215,7 +8215,7 @@ def err_overflow_builtin_ext_int_max_size : Error<
   "__builtin_mul_overflow does not support signed _ExtInt operands of more "
   "than %0 bits">;
 
-def err_atomic_load_store_uses_lib : Error<
+def err_atomic_load_store_uses_lib : Warning<
   "atomic %select{load|store}0 requires runtime support that is not "
   "available for this target">;
 
