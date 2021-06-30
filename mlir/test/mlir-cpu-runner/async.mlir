@@ -1,5 +1,6 @@
-// RUN:   mlir-opt %s -async-ref-counting                                      \
-// RUN:               -async-to-async-runtime                                  \
+// RUN:   mlir-opt %s -async-to-async-runtime                                  \
+// RUN:               -async-runtime-ref-counting                              \
+// RUN:               -async-runtime-ref-counting-opt                          \
 // RUN:               -convert-async-to-llvm                                   \
 // RUN:               -convert-linalg-to-loops                                 \
 // RUN:               -convert-scf-to-std                                      \
@@ -25,7 +26,7 @@ func @main() {
   %c4 = constant 4.0 : f32
 
   %A = memref.alloc() : memref<4xf32>
-  linalg.fill(%A, %c0) : memref<4xf32>, f32
+  linalg.fill(%c0, %A) : f32, memref<4xf32>
 
   // CHECK: [0, 0, 0, 0]
   %U = memref.cast %A :  memref<4xf32> to memref<*xf32>

@@ -560,11 +560,6 @@ static std::error_code rename_handle(HANDLE FromHandle, const Twine &To) {
   return errc::permission_denied;
 }
 
-static std::error_code rename_fd(int FromFD, const Twine &To) {
-  HANDLE FromHandle = reinterpret_cast<HANDLE>(_get_osfhandle(FromFD));
-  return rename_handle(FromHandle, To);
-}
-
 std::error_code rename(const Twine &From, const Twine &To) {
   // Convert to utf-16.
   SmallVector<wchar_t, 128> WideFrom;
@@ -674,7 +669,7 @@ static bool isReservedName(StringRef path) {
 
   // Then compare against the list of ancient reserved names.
   for (size_t i = 0; i < array_lengthof(sReservedNames); ++i) {
-    if (path.equals_lower(sReservedNames[i]))
+    if (path.equals_insensitive(sReservedNames[i]))
       return true;
   }
 
@@ -903,10 +898,10 @@ std::error_code mapped_file_region::init(sys::fs::file_t OrigFileHandle,
 mapped_file_region::mapped_file_region(sys::fs::file_t fd, mapmode mode,
                                        size_t length, uint64_t offset,
                                        std::error_code &ec)
-    : Size(length), Mapping() {
+    : Size(length) {
   ec = init(fd, offset, mode);
   if (ec)
-    Mapping = 0;
+    copyFrom(mapped_file_region());
 }
 
 static bool hasFlushBufferKernelBug() {
@@ -925,7 +920,7 @@ static bool isEXE(StringRef Magic) {
   return false;
 }
 
-mapped_file_region::~mapped_file_region() {
+void mapped_file_region::unmapImpl() {
   if (Mapping) {
 
     bool Exe = isEXE(StringRef((char *)Mapping, Size));

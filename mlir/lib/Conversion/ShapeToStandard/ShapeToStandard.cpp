@@ -155,17 +155,18 @@ LogicalResult BroadcastOpConverter::matchAndRewrite(
                        return lb.create<SubIOp>(indexTy, maxRank, v);
                      }));
 
-  rewriter.replaceOp(
-      op, lb.create<tensor::GenerateOp>(
-                getExtentTensorType(lb.getContext()), ValueRange{maxRank},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value broadcastedDim = getBroadcastedDim(
-                      ImplicitLocOpBuilder(loc, b), transformed.shapes(),
-                      rankDiffs, args[0]);
+  Value replacement = lb.create<tensor::GenerateOp>(
+      getExtentTensorType(lb.getContext()), ValueRange{maxRank},
+      [&](OpBuilder &b, Location loc, ValueRange args) {
+        Value broadcastedDim =
+            getBroadcastedDim(ImplicitLocOpBuilder(loc, b),
+                              transformed.shapes(), rankDiffs, args[0]);
 
-                  b.create<tensor::YieldOp>(loc, broadcastedDim);
-                })
-              ->getResults());
+        b.create<tensor::YieldOp>(loc, broadcastedDim);
+      });
+  if (replacement.getType() != op.getType())
+    replacement = lb.create<tensor::CastOp>(op.getType(), replacement);
+  rewriter.replaceOp(op, replacement);
   return success();
 }
 
@@ -626,10 +627,11 @@ LogicalResult SplitAtOpConversion::matchAndRewrite(
   Value index = b.create<SelectOp>(indexIsNegative, add, originalIndex);
 
   Value one = b.create<ConstantIndexOp>(1);
-  Value head = b.create<SubTensorOp>(transformed.operand(), zero, index, one);
+  Value head =
+      b.create<tensor::ExtractSliceOp>(transformed.operand(), zero, index, one);
   Value tailSize = b.create<SubIOp>(rank, index);
-  Value tail =
-      b.create<SubTensorOp>(transformed.operand(), index, tailSize, one);
+  Value tail = b.create<tensor::ExtractSliceOp>(transformed.operand(), index,
+                                                tailSize, one);
   rewriter.replaceOp(op, {head, tail});
   return success();
 }

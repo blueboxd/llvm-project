@@ -177,6 +177,7 @@ enum {
  * The struct is identical to the one in the kmp.h file.
  * We maintain the same data structure for compatibility.
  */
+typedef short kmp_int16;
 typedef int kmp_int32;
 typedef struct ident {
   kmp_int32 reserved_1; /**<  might be used in Fortran; see above  */
@@ -425,15 +426,25 @@ EXTERN bool __kmpc_kernel_parallel(void **WorkFn);
 EXTERN void __kmpc_kernel_end_parallel();
 
 EXTERN void __kmpc_data_sharing_init_stack();
-EXTERN void __kmpc_data_sharing_init_stack_spmd();
-EXTERN void *__kmpc_data_sharing_coalesced_push_stack(size_t size,
-                                                      int16_t UseSharedMemory);
-EXTERN void *__kmpc_data_sharing_push_stack(size_t size,
-                                            int16_t UseSharedMemory);
-EXTERN void __kmpc_data_sharing_pop_stack(void *a);
 EXTERN void __kmpc_begin_sharing_variables(void ***GlobalArgs, size_t nArgs);
 EXTERN void __kmpc_end_sharing_variables();
 EXTERN void __kmpc_get_shared_variables(void ***GlobalArgs);
+
+/// Entry point to start a new parallel region.
+///
+/// \param ident       The source identifier.
+/// \param global_tid  The global thread ID.
+/// \param if_expr     The if(expr), or 1 if none given.
+/// \param num_threads The num_threads(expr), or -1 if none given.
+/// \param proc_bind   The proc_bind, or `proc_bind_default` if none given.
+/// \param fn          The outlined parallel region function.
+/// \param wrapper_fn  The worker wrapper function of fn.
+/// \param args        The pointer array of arguments to fn.
+/// \param nargs       The number of arguments to fn.
+EXTERN void __kmpc_parallel_51(ident_t *ident, kmp_int32 global_tid,
+                               kmp_int32 if_expr, kmp_int32 num_threads,
+                               int proc_bind, void *fn, void *wrapper_fn,
+                               void **args, size_t nargs);
 
 // SPMD execution mode interrogation function.
 EXTERN int8_t __kmpc_is_spmd_exec_mode();
@@ -444,5 +455,15 @@ EXTERN void __kmpc_get_team_static_memory(int16_t isSPMDExecutionMode,
 
 EXTERN void __kmpc_restore_team_static_memory(int16_t isSPMDExecutionMode,
                                               int16_t is_shared);
+
+/// Allocate \p Bytes in "shareable" memory and return the address. Needs to be
+/// called balanced with __kmpc_free_shared like a stack (push/pop). Can be
+/// called by any thread, allocation happens per-thread.
+EXTERN void *__kmpc_alloc_shared(uint64_t Bytes);
+
+/// Deallocate \p Ptr. Needs to be called balanced with __kmpc_alloc_shared like
+/// a stack (push/pop). Can be called by any thread. \p Ptr must be allocated by
+/// __kmpc_alloc_shared by the same thread.
+EXTERN void __kmpc_free_shared(void *Ptr);
 
 #endif

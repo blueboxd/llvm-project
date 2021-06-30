@@ -105,7 +105,7 @@ struct DriverOptions {
   bool debugModuleWriter{false};
   bool defaultReal8{false};
   bool measureTree{false};
-  bool unparseTypedExprsToF18_FC{false};
+  bool useAnalyzedObjectsForUnparse{true};
   std::vector<std::string> F18_FCArgs;
   const char *prefix{nullptr};
   bool getDefinition{false};
@@ -253,9 +253,18 @@ std::string CompileFortran(std::string path, Fortran::parser::Options options,
   if (!driver.debugNoSemantics || driver.dumpSymbols ||
       driver.dumpUnparseWithSymbols || driver.getDefinition ||
       driver.getSymbolsSources) {
-    Fortran::semantics::Semantics semantics{semanticsContext, parseTree,
-        parsing.cooked().AsCharBlock(), driver.debugModuleWriter};
+    Fortran::semantics::Semantics semantics{
+        semanticsContext, parseTree, driver.debugModuleWriter};
     semantics.Perform();
+    Fortran::semantics::RuntimeDerivedTypeTables tables;
+    if (!semantics.AnyFatalError()) {
+      tables =
+          Fortran::semantics::BuildRuntimeDerivedTypeTables(semanticsContext);
+      if (!tables.schemata) {
+        llvm::errs() << driver.prefix
+                     << "could not find module file for __fortran_type_info\n";
+      }
+    }
     semantics.EmitMessages(llvm::errs());
     if (semantics.AnyFatalError()) {
       if (driver.dumpSymbols) {
@@ -267,12 +276,6 @@ std::string CompileFortran(std::string path, Fortran::parser::Options options,
         Fortran::parser::DumpTree(llvm::outs(), parseTree, &asFortran);
       }
       return {};
-    }
-    auto tables{
-        Fortran::semantics::BuildRuntimeDerivedTypeTables(semanticsContext)};
-    if (!tables.schemata) {
-      llvm::errs() << driver.prefix
-                   << "could not find module file for __fortran_type_info\n";
     }
     if (driver.dumpSymbols) {
       semantics.DumpSymbols(llvm::outs());
@@ -319,7 +322,8 @@ std::string CompileFortran(std::string path, Fortran::parser::Options options,
     Unparse(llvm::outs(), parseTree, driver.encoding, true /*capitalize*/,
         options.features.IsEnabled(
             Fortran::common::LanguageFeature::BackslashEscapes),
-        nullptr /* action before each statement */, &asFortran);
+        nullptr /* action before each statement */,
+        driver.useAnalyzedObjectsForUnparse ? &asFortran : nullptr);
     return {};
   }
   if (driver.dumpPreFirTree) {
@@ -350,7 +354,7 @@ std::string CompileFortran(std::string path, Fortran::parser::Options options,
         options.features.IsEnabled(
             Fortran::common::LanguageFeature::BackslashEscapes),
         nullptr /* action before each statement */,
-        driver.unparseTypedExprsToF18_FC ? &asFortran : nullptr);
+        driver.useAnalyzedObjectsForUnparse ? &asFortran : nullptr);
   }
 
   RunOtherCompiler(driver, tmpSourcePath.data(), relo.data());
@@ -514,11 +518,6 @@ int main(int argc, char *const argv[]) {
     } else if (arg.find("-W") != std::string::npos) {
       if (arg == "-Werror")
         driver.warningsAreErrors = true;
-      else {
-        // Only -Werror is supported currently
-        llvm::errs() << "Only `-Werror` is supported currently.\n";
-        return EXIT_FAILURE;
-      }
     } else if (arg == "-ed") {
       options.features.Enable(Fortran::common::LanguageFeature::OldDebugLines);
     } else if (arg == "-E") {
@@ -535,9 +534,13 @@ int main(int argc, char *const argv[]) {
       options.features.Enable(
           Fortran::parser::LanguageFeature::LogicalAbbreviations,
           arg == "-flogical-abbreviations");
-    } else if (arg == "-fimplicit-none-type-always") {
+    } else if (arg == "-fimplicit-none-type-always" ||
+        arg == "-fimplicit-none") {
       options.features.Enable(
           Fortran::common::LanguageFeature::ImplicitNoneTypeAlways);
+    } else if (arg == "-fno-implicit-none") {
+      options.features.Enable(
+          Fortran::common::LanguageFeature::ImplicitNoneTypeAlways, false);
     } else if (arg == "-fimplicit-none-type-never") {
       options.features.Enable(
           Fortran::common::LanguageFeature::ImplicitNoneTypeNever);
@@ -576,8 +579,8 @@ int main(int argc, char *const argv[]) {
     } else if (arg == "-funparse-with-symbols" ||
         arg == "-fdebug-unparse-with-symbols") {
       driver.dumpUnparseWithSymbols = true;
-    } else if (arg == "-funparse-typed-exprs-to-f18-fc") {
-      driver.unparseTypedExprsToF18_FC = true;
+    } else if (arg == "-fno-analyzed-objects-for-unparse") {
+      driver.useAnalyzedObjectsForUnparse = false;
     } else if (arg == "-fparse-only" || arg == "-fsyntax-only") {
       driver.syntaxOnly = true;
     } else if (arg == "-c") {
@@ -654,8 +657,8 @@ int main(int argc, char *const argv[]) {
         }
         arguments[i] = std::strtol(args.front().c_str(), &endptr, 10);
         if (*endptr != '\0') {
-          llvm::errs() << "Invalid argument to -fget-definitions: "
-                       << args.front() << '\n';
+          llvm::errs() << "error: invalid value '" << args.front()
+                       << "' in 'fget-definition'" << '\n';
           return EXIT_FAILURE;
         }
         args.pop_front();

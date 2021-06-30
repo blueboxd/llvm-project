@@ -216,14 +216,20 @@ define void @sitofp_8i64_8f64() #0 {
 }
 
 define void @sitofp_2i32_2f64() #0 {
-; CHECK-LABEL: @sitofp_2i32_2f64(
-; CHECK-NEXT:    [[LD0:%.*]] = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 0), align 64
-; CHECK-NEXT:    [[LD1:%.*]] = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 1), align 4
-; CHECK-NEXT:    [[CVT0:%.*]] = sitofp i32 [[LD0]] to double
-; CHECK-NEXT:    [[CVT1:%.*]] = sitofp i32 [[LD1]] to double
-; CHECK-NEXT:    store double [[CVT0]], double* getelementptr inbounds ([8 x double], [8 x double]* @dst64, i32 0, i64 0), align 64
-; CHECK-NEXT:    store double [[CVT1]], double* getelementptr inbounds ([8 x double], [8 x double]* @dst64, i32 0, i64 1), align 8
-; CHECK-NEXT:    ret void
+; SSE-LABEL: @sitofp_2i32_2f64(
+; SSE-NEXT:    [[LD0:%.*]] = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 0), align 64
+; SSE-NEXT:    [[LD1:%.*]] = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 1), align 4
+; SSE-NEXT:    [[CVT0:%.*]] = sitofp i32 [[LD0]] to double
+; SSE-NEXT:    [[CVT1:%.*]] = sitofp i32 [[LD1]] to double
+; SSE-NEXT:    store double [[CVT0]], double* getelementptr inbounds ([8 x double], [8 x double]* @dst64, i32 0, i64 0), align 64
+; SSE-NEXT:    store double [[CVT1]], double* getelementptr inbounds ([8 x double], [8 x double]* @dst64, i32 0, i64 1), align 8
+; SSE-NEXT:    ret void
+;
+; AVX-LABEL: @sitofp_2i32_2f64(
+; AVX-NEXT:    [[TMP1:%.*]] = load <2 x i32>, <2 x i32>* bitcast ([16 x i32]* @src32 to <2 x i32>*), align 64
+; AVX-NEXT:    [[TMP2:%.*]] = sitofp <2 x i32> [[TMP1]] to <2 x double>
+; AVX-NEXT:    store <2 x double> [[TMP2]], <2 x double>* bitcast ([8 x double]* @dst64 to <2 x double>*), align 64
+; AVX-NEXT:    ret void
 ;
   %ld0 = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 0), align 64
   %ld1 = load i32, i32* getelementptr inbounds ([16 x i32], [16 x i32]* @src32, i32 0, i64 1), align 4
@@ -1283,16 +1289,24 @@ define void @sitofp_16i8_16f32() #0 {
 ;
 
 define <4 x double> @sitofp_4xi32_4f64(i32 %a0, i32 %a1, i32 %a2, i32 %a3) #0 {
-; CHECK-LABEL: @sitofp_4xi32_4f64(
-; CHECK-NEXT:    [[CVT0:%.*]] = sitofp i32 [[A0:%.*]] to double
-; CHECK-NEXT:    [[CVT1:%.*]] = sitofp i32 [[A1:%.*]] to double
-; CHECK-NEXT:    [[CVT2:%.*]] = sitofp i32 [[A2:%.*]] to double
-; CHECK-NEXT:    [[CVT3:%.*]] = sitofp i32 [[A3:%.*]] to double
-; CHECK-NEXT:    [[RES0:%.*]] = insertelement <4 x double> undef, double [[CVT0]], i32 0
-; CHECK-NEXT:    [[RES1:%.*]] = insertelement <4 x double> [[RES0]], double [[CVT1]], i32 1
-; CHECK-NEXT:    [[RES2:%.*]] = insertelement <4 x double> [[RES1]], double [[CVT2]], i32 2
-; CHECK-NEXT:    [[RES3:%.*]] = insertelement <4 x double> [[RES2]], double [[CVT3]], i32 3
-; CHECK-NEXT:    ret <4 x double> [[RES3]]
+; SSE-LABEL: @sitofp_4xi32_4f64(
+; SSE-NEXT:    [[CVT0:%.*]] = sitofp i32 [[A0:%.*]] to double
+; SSE-NEXT:    [[CVT1:%.*]] = sitofp i32 [[A1:%.*]] to double
+; SSE-NEXT:    [[CVT2:%.*]] = sitofp i32 [[A2:%.*]] to double
+; SSE-NEXT:    [[CVT3:%.*]] = sitofp i32 [[A3:%.*]] to double
+; SSE-NEXT:    [[RES0:%.*]] = insertelement <4 x double> undef, double [[CVT0]], i32 0
+; SSE-NEXT:    [[RES1:%.*]] = insertelement <4 x double> [[RES0]], double [[CVT1]], i32 1
+; SSE-NEXT:    [[RES2:%.*]] = insertelement <4 x double> [[RES1]], double [[CVT2]], i32 2
+; SSE-NEXT:    [[RES3:%.*]] = insertelement <4 x double> [[RES2]], double [[CVT3]], i32 3
+; SSE-NEXT:    ret <4 x double> [[RES3]]
+;
+; AVX-LABEL: @sitofp_4xi32_4f64(
+; AVX-NEXT:    [[TMP1:%.*]] = insertelement <4 x i32> poison, i32 [[A0:%.*]], i32 0
+; AVX-NEXT:    [[TMP2:%.*]] = insertelement <4 x i32> [[TMP1]], i32 [[A1:%.*]], i32 1
+; AVX-NEXT:    [[TMP3:%.*]] = insertelement <4 x i32> [[TMP2]], i32 [[A2:%.*]], i32 2
+; AVX-NEXT:    [[TMP4:%.*]] = insertelement <4 x i32> [[TMP3]], i32 [[A3:%.*]], i32 3
+; AVX-NEXT:    [[TMP5:%.*]] = sitofp <4 x i32> [[TMP4]] to <4 x double>
+; AVX-NEXT:    ret <4 x double> [[TMP5]]
 ;
   %cvt0 = sitofp i32 %a0 to double
   %cvt1 = sitofp i32 %a1 to double
@@ -1306,16 +1320,24 @@ define <4 x double> @sitofp_4xi32_4f64(i32 %a0, i32 %a1, i32 %a2, i32 %a3) #0 {
 }
 
 define <4 x float> @sitofp_4xi32_4f32(i32 %a0, i32 %a1, i32 %a2, i32 %a3) #0 {
-; CHECK-LABEL: @sitofp_4xi32_4f32(
-; CHECK-NEXT:    [[CVT0:%.*]] = sitofp i32 [[A0:%.*]] to float
-; CHECK-NEXT:    [[CVT1:%.*]] = sitofp i32 [[A1:%.*]] to float
-; CHECK-NEXT:    [[CVT2:%.*]] = sitofp i32 [[A2:%.*]] to float
-; CHECK-NEXT:    [[CVT3:%.*]] = sitofp i32 [[A3:%.*]] to float
-; CHECK-NEXT:    [[RES0:%.*]] = insertelement <4 x float> undef, float [[CVT0]], i32 0
-; CHECK-NEXT:    [[RES1:%.*]] = insertelement <4 x float> [[RES0]], float [[CVT1]], i32 1
-; CHECK-NEXT:    [[RES2:%.*]] = insertelement <4 x float> [[RES1]], float [[CVT2]], i32 2
-; CHECK-NEXT:    [[RES3:%.*]] = insertelement <4 x float> [[RES2]], float [[CVT3]], i32 3
-; CHECK-NEXT:    ret <4 x float> [[RES3]]
+; SSE-LABEL: @sitofp_4xi32_4f32(
+; SSE-NEXT:    [[CVT0:%.*]] = sitofp i32 [[A0:%.*]] to float
+; SSE-NEXT:    [[CVT1:%.*]] = sitofp i32 [[A1:%.*]] to float
+; SSE-NEXT:    [[CVT2:%.*]] = sitofp i32 [[A2:%.*]] to float
+; SSE-NEXT:    [[CVT3:%.*]] = sitofp i32 [[A3:%.*]] to float
+; SSE-NEXT:    [[RES0:%.*]] = insertelement <4 x float> undef, float [[CVT0]], i32 0
+; SSE-NEXT:    [[RES1:%.*]] = insertelement <4 x float> [[RES0]], float [[CVT1]], i32 1
+; SSE-NEXT:    [[RES2:%.*]] = insertelement <4 x float> [[RES1]], float [[CVT2]], i32 2
+; SSE-NEXT:    [[RES3:%.*]] = insertelement <4 x float> [[RES2]], float [[CVT3]], i32 3
+; SSE-NEXT:    ret <4 x float> [[RES3]]
+;
+; AVX-LABEL: @sitofp_4xi32_4f32(
+; AVX-NEXT:    [[TMP1:%.*]] = insertelement <4 x i32> poison, i32 [[A0:%.*]], i32 0
+; AVX-NEXT:    [[TMP2:%.*]] = insertelement <4 x i32> [[TMP1]], i32 [[A1:%.*]], i32 1
+; AVX-NEXT:    [[TMP3:%.*]] = insertelement <4 x i32> [[TMP2]], i32 [[A2:%.*]], i32 2
+; AVX-NEXT:    [[TMP4:%.*]] = insertelement <4 x i32> [[TMP3]], i32 [[A3:%.*]], i32 3
+; AVX-NEXT:    [[TMP5:%.*]] = sitofp <4 x i32> [[TMP4]] to <4 x float>
+; AVX-NEXT:    ret <4 x float> [[TMP5]]
 ;
   %cvt0 = sitofp i32 %a0 to float
   %cvt1 = sitofp i32 %a1 to float

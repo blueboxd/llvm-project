@@ -45,6 +45,8 @@ option(COMPILER_RT_BUILD_MEMPROF "Build memory profiling runtime" ON)
 mark_as_advanced(COMPILER_RT_BUILD_MEMPROF)
 option(COMPILER_RT_BUILD_XRAY_NO_PREINIT "Build xray with no preinit patching" OFF)
 mark_as_advanced(COMPILER_RT_BUILD_XRAY_NO_PREINIT)
+option(COMPILER_RT_BUILD_ORC "Build ORC runtime" ON)
+mark_as_advanced(COMPILER_RT_BUILD_ORC)
 
 set(COMPILER_RT_ASAN_SHADOW_SCALE ""
     CACHE STRING "Override the shadow scale to be used in ASan runtime")
@@ -173,7 +175,7 @@ endif()
 
 option(SANITIZER_ALLOW_CXXABI "Allow use of C++ ABI details in ubsan" ON)
 
-set(SANITIZE_CAN_USE_CXXABI OFF)
+set(SANITIZER_CAN_USE_CXXABI OFF)
 if (cxxabi_supported AND SANITIZER_ALLOW_CXXABI)
   set(SANITIZER_CAN_USE_CXXABI ON)
 endif()
@@ -272,8 +274,8 @@ if(NOT COMPILER_RT_HAS_FUNC_SYMBOL)
   add_definitions(-D__func__=__FUNCTION__)
 endif()
 
-# Provide some common commmandline flags for Sanitizer runtimes.
-if("${ANDROID_API_LEVEL}" GREATER_EQUAL 28)
+# Provide some common commandline flags for Sanitizer runtimes.
+if("${ANDROID_API_LEVEL}" GREATER_EQUAL 29)
   list(APPEND SANITIZER_COMMON_CFLAGS -fno-emulated-tls)
   string(APPEND COMPILER_RT_TEST_COMPILER_CFLAGS " -fno-emulated-tls")
 endif()
@@ -435,10 +437,18 @@ else()
 endif()
 
 append_list_if(COMPILER_RT_HAS_LIBC c SANITIZER_COMMON_LINK_LIBS)
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Fuchsia")
+  list(APPEND SANITIZER_COMMON_LINK_LIBS zircon)
+endif()
 
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Fuchsia")
-  list(APPEND SANITIZER_COMMON_LINK_FLAGS -Wl,-z,defs,-z,now,-z,relro)
-  list(APPEND SANITIZER_COMMON_LINK_LIBS zircon)
+  set(SANITIZER_NO_UNDEFINED_SYMBOLS_DEFAULT ON)
+else()
+  set(SANITIZER_NO_UNDEFINED_SYMBOLS_DEFAULT OFF)
+endif()
+option(SANITIZER_NO_UNDEFINED_SYMBOLS "Report error on unresolved symbol references" ${SANITIZER_NO_UNDEFINED_SYMBOLS_DEFAULT})
+if (SANITIZER_NO_UNDEFINED_SYMBOLS)
+  list(APPEND SANITIZER_COMMON_LINK_FLAGS -Wl,-z,defs)
 endif()
 
 # TODO: COMPILER_RT_COMMON_CFLAGS and COMPILER_RT_COMMON_LINK_FLAGS are

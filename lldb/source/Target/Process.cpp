@@ -200,6 +200,16 @@ FileSpec ProcessProperties::GetPythonOSPluginPath() const {
   return m_collection_sp->GetPropertyAtIndexAsFileSpec(nullptr, idx);
 }
 
+uint32_t ProcessProperties::GetVirtualAddressableBits() const {
+  const uint32_t idx = ePropertyVirtualAddressableBits;
+  return m_collection_sp->GetPropertyAtIndexAsUInt64(
+      nullptr, idx, g_process_properties[idx].default_uint_value);
+}
+
+void ProcessProperties::SetVirtualAddressableBits(uint32_t bits) {
+  const uint32_t idx = ePropertyVirtualAddressableBits;
+  m_collection_sp->SetPropertyAtIndexAsUInt64(nullptr, idx, bits);
+}
 void ProcessProperties::SetPythonOSPluginPath(const FileSpec &file) {
   const uint32_t idx = ePropertyPythonOSPluginPath;
   m_collection_sp->SetPropertyAtIndexAsFileSpec(nullptr, idx, file);
@@ -812,6 +822,9 @@ bool Process::HandleProcessStateChangedEvent(const EventSP &event_sp,
             case eStopReasonWatchpoint:
             case eStopReasonException:
             case eStopReasonExec:
+            case eStopReasonFork:
+            case eStopReasonVFork:
+            case eStopReasonVForkDone:
             case eStopReasonThreadExiting:
             case eStopReasonInstrumentation:
             case eStopReasonProcessorTrace:
@@ -2865,8 +2878,10 @@ void Process::CompleteAttach() {
       ProcessInstanceInfo process_info;
       GetProcessInfo(process_info);
       const ArchSpec &process_arch = process_info.GetArchitecture();
+      const ArchSpec &target_arch = GetTarget().GetArchitecture();
       if (process_arch.IsValid() &&
-          !GetTarget().GetArchitecture().IsExactMatch(process_arch)) {
+          target_arch.IsCompatibleMatch(process_arch) &&
+          !target_arch.IsExactMatch(process_arch)) {
         GetTarget().SetArchitecture(process_arch);
         LLDB_LOGF(log,
                   "Process::%s switching architecture to %s based on info "
@@ -3828,9 +3843,7 @@ thread_result_t Process::RunPrivateStateThread(bool is_secondary_thread) {
 
 // Process Event Data
 
-Process::ProcessEventData::ProcessEventData()
-    : EventData(), m_process_wp(), m_state(eStateInvalid), m_restarted(false),
-      m_update_state(0), m_interrupted(false) {}
+Process::ProcessEventData::ProcessEventData() : EventData(), m_process_wp() {}
 
 Process::ProcessEventData::ProcessEventData(const ProcessSP &process_sp,
                                             StateType state)
@@ -5545,6 +5558,26 @@ void Process::Flush() {
   m_queue_list_stop_id = 0;
 }
 
+lldb::addr_t Process::GetCodeAddressMask() {
+  if (m_code_address_mask == 0) {
+    if (uint32_t number_of_addressable_bits = GetVirtualAddressableBits()) {
+      lldb::addr_t address_mask = ~((1ULL << number_of_addressable_bits) - 1);
+      SetCodeAddressMask(address_mask);
+    }
+  }
+  return m_code_address_mask;
+}
+
+lldb::addr_t Process::GetDataAddressMask() {
+  if (m_data_address_mask == 0) {
+    if (uint32_t number_of_addressable_bits = GetVirtualAddressableBits()) {
+      lldb::addr_t address_mask = ~((1ULL << number_of_addressable_bits) - 1);
+      SetDataAddressMask(address_mask);
+    }
+  }
+  return m_data_address_mask;
+}
+
 void Process::DidExec() {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
   LLDB_LOGF(log, "Process::%s()", __FUNCTION__);
@@ -5600,6 +5633,8 @@ addr_t Process::ResolveIndirectFunction(const Address *address, Status &error) {
           symbol ? symbol->GetName().AsCString() : "<UNKNOWN>");
       function_addr = LLDB_INVALID_ADDRESS;
     } else {
+      if (ABISP abi_sp = GetABI())
+        function_addr = abi_sp->FixCodeAddress(function_addr);
       m_resolved_indirect_addresses.insert(
           std::pair<addr_t, addr_t>(addr, function_addr));
     }
@@ -5698,7 +5733,7 @@ void Process::PrintWarningUnsupportedLanguage(const SymbolContext &sc) {
   if (!plugins[language]) {
     PrintWarning(Process::Warnings::eWarningsUnsupportedLanguage,
                  sc.module_sp.get(),
-                 "This version of LLDB has no plugin for the %s language. "
+                 "This version of LLDB has no plugin for the language \"%s\". "
                  "Inspection of frame variables will be limited.\n",
                  Language::GetNameForLanguageType(language));
   }
@@ -5778,10 +5813,8 @@ Process::AdvanceAddressToNextBranchInstruction(Address default_stop_addr,
 
   const char *plugin_name = nullptr;
   const char *flavor = nullptr;
-  const bool prefer_file_cache = true;
   disassembler_sp = Disassembler::DisassembleRange(
-      target.GetArchitecture(), plugin_name, flavor, GetTarget(), range_bounds,
-      prefer_file_cache);
+      target.GetArchitecture(), plugin_name, flavor, GetTarget(), range_bounds);
   if (disassembler_sp)
     insn_list = &disassembler_sp->GetInstructionList();
 
@@ -6031,4 +6064,85 @@ bool Process::CallVoidArgVoidPtrReturn(const Address *address,
   }
 
   return false;
+}
+
+llvm::Expected<const MemoryTagManager *>
+Process::GetMemoryTagManager(lldb::addr_t addr, lldb::addr_t end_addr) {
+  Architecture *arch = GetTarget().GetArchitecturePlugin();
+  const MemoryTagManager *tag_manager =
+      arch ? arch->GetMemoryTagManager() : nullptr;
+  if (!arch || !tag_manager) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "This architecture does not support memory tagging",
+        GetPluginName().GetCString());
+  }
+
+  if (!SupportsMemoryTagging()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Process does not support memory tagging");
+  }
+
+  ptrdiff_t len = tag_manager->AddressDiff(end_addr, addr);
+  if (len <= 0) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "End address (0x%" PRIx64
+        ") must be greater than the start address (0x%" PRIx64 ")",
+        end_addr, addr);
+  }
+
+  // Region lookup is not address size aware so mask the address
+  MemoryRegionInfo::RangeType tag_range(tag_manager->RemoveNonAddressBits(addr),
+                                        len);
+  tag_range = tag_manager->ExpandToGranule(tag_range);
+
+  // Make a copy so we can use the original range in errors
+  MemoryRegionInfo::RangeType remaining_range(tag_range);
+
+  // While we haven't found a matching memory region for some of the range
+  while (remaining_range.IsValid()) {
+    MemoryRegionInfo region;
+    Status status = GetMemoryRegionInfo(remaining_range.GetRangeBase(), region);
+
+    if (status.Fail() || region.GetMemoryTagged() != MemoryRegionInfo::eYes) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "Address range 0x%lx:0x%lx is not in a memory tagged region",
+          tag_range.GetRangeBase(), tag_range.GetRangeEnd());
+    }
+
+    if (region.GetRange().GetRangeEnd() >= remaining_range.GetRangeEnd()) {
+      // We've found a region for the whole range or the last piece of a range
+      remaining_range.SetByteSize(0);
+    } else {
+      // We've found some part of the range, look for the rest
+      remaining_range.SetRangeBase(region.GetRange().GetRangeEnd());
+    }
+  }
+
+  return tag_manager;
+}
+
+llvm::Expected<std::vector<lldb::addr_t>>
+Process::ReadMemoryTags(const MemoryTagManager *tag_manager, lldb::addr_t addr,
+                        size_t len) {
+  if (!tag_manager) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "A memory tag manager is required for reading memory tags.");
+  }
+
+  MemoryTagManager::TagRange range(tag_manager->RemoveNonAddressBits(addr),
+                                   len);
+  range = tag_manager->ExpandToGranule(range);
+
+  llvm::Expected<std::vector<uint8_t>> tag_data =
+      DoReadMemoryTags(range.GetRangeBase(), range.GetByteSize(),
+                       tag_manager->GetAllocationTagType());
+  if (!tag_data)
+    return tag_data.takeError();
+
+  return tag_manager->UnpackTagsData(
+      *tag_data, range.GetByteSize() / tag_manager->GetGranuleSize());
 }

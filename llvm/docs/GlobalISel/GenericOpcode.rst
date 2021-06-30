@@ -186,10 +186,18 @@ Extract a register of the specified size, starting from the block given by
 index. This will almost certainly be mapped to sub-register COPYs after
 register banks have been selected.
 
+.. code-block:: none
+
+  %3:_(s32) = G_EXTRACT %2:_(s64), 32
+
 G_INSERT
 ^^^^^^^^
 
 Insert a smaller register into a larger one at the specified bit-index.
+
+.. code-block:: none
+
+  %2:_(s64) = G_INSERT %0:(_s64), %1:_(s32), 0
 
 G_MERGE_VALUES
 ^^^^^^^^^^^^^^
@@ -243,6 +251,12 @@ The source operands are registers as follows:
 - Source
 - The least-significant bit for the extraction
 - The width of the extraction
+
+The least-significant bit (lsb) and width operands are in the range:
+
+::
+
+      0 <= lsb < lsb + width <= source bitwidth, where all values are unsigned
 
 G_SBFX sign-extends the result, while G_UBFX zero-extends the result.
 
@@ -777,7 +791,7 @@ G_DYN_STACKALLOC
 ^^^^^^^^^^^^^^^^
 
 Dynamically realigns the stack pointer to the specified size and alignment.
-An alignment value of `0` or `1` mean no specific alignment.
+An alignment value of `0` or `1` means no specific alignment.
 
 .. code-block:: none
 
@@ -792,7 +806,7 @@ hints for various combines.
 G_ASSERT_SEXT, G_ASSERT_ZEXT
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Signifies that the contents of a register were previously extended from a
+This signifies that the contents of a register were previously extended from a
 smaller type.
 
 The smaller type is denoted using an immediate operand. For scalars, this is the

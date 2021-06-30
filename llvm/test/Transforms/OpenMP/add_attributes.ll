@@ -1,7 +1,7 @@
-; RUN: opt < %s -S -openmpopt        | FileCheck %s
-; RUN: opt < %s -S -passes=openmpopt | FileCheck %s
-; RUN: opt < %s -S -openmpopt        -openmp-ir-builder-optimistic-attributes | FileCheck %s --check-prefix=OPTIMISTIC
-; RUN: opt < %s -S -passes=openmpopt -openmp-ir-builder-optimistic-attributes | FileCheck %s --check-prefix=OPTIMISTIC
+; RUN: opt < %s -S -openmp-opt-cgscc        | FileCheck %s
+; RUN: opt < %s -S -passes=openmp-opt-cgscc | FileCheck %s
+; RUN: opt < %s -S -openmp-opt-cgscc        -openmp-ir-builder-optimistic-attributes | FileCheck %s --check-prefix=OPTIMISTIC
+; RUN: opt < %s -S -passes=openmp-opt-cgscc -openmp-ir-builder-optimistic-attributes | FileCheck %s --check-prefix=OPTIMISTIC
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 
 %struct.omp_lock_t = type { i8* }
@@ -1739,3 +1739,6 @@ attributes #0 = { noinline }
 ; OPTIMISTIC: ; Function Attrs: convergent noinline nounwind 
 ; OPTIMISTIC-NEXT: declare void @__kmpc_barrier_simple_spmd(%struct.ident_t* nocapture nofree readonly, i32)
 
+!llvm.module.flags = !{!0}
+
+!0 = !{i32 7, !"openmp", i32 50}

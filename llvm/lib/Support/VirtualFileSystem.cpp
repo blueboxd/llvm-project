@@ -1318,12 +1318,13 @@ class llvm::vfs::RedirectingFileSystemParser {
     if (!parseScalarString(N, Value, Storage))
       return false;
 
-    if (Value.equals_lower("true") || Value.equals_lower("on") ||
-        Value.equals_lower("yes") || Value == "1") {
+    if (Value.equals_insensitive("true") || Value.equals_insensitive("on") ||
+        Value.equals_insensitive("yes") || Value == "1") {
       Result = true;
       return true;
-    } else if (Value.equals_lower("false") || Value.equals_lower("off") ||
-               Value.equals_lower("no") || Value == "0") {
+    } else if (Value.equals_insensitive("false") ||
+               Value.equals_insensitive("off") ||
+               Value.equals_insensitive("no") || Value == "0") {
       Result = false;
       return true;
     }
@@ -2127,6 +2128,8 @@ void vfs::collectVFSFromYAML(std::unique_ptr<MemoryBuffer> Buffer,
   std::unique_ptr<RedirectingFileSystem> VFS = RedirectingFileSystem::create(
       std::move(Buffer), DiagHandler, YAMLFilePath, DiagContext,
       std::move(ExternalFS));
+  if (!VFS)
+    return;
   ErrorOr<RedirectingFileSystem::LookupResult> RootResult =
       VFS->lookupPath("/");
   if (!RootResult)

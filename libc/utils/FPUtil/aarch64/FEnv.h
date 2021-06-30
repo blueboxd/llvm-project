@@ -90,10 +90,10 @@ static inline int disableExcept(int excepts) {
 }
 
 static inline int clearExcept(int excepts) {
-  uint32_t controlWord = FEnv::getControlWord();
+  uint32_t statusWord = FEnv::getStatusWord();
   uint32_t toClear = FEnv::getStatusValueForExcept(excepts);
-  controlWord &= ~(toClear << FEnv::ExceptionStatusFlagsBitPosition);
-  FEnv::writeStatusWord(controlWord);
+  statusWord &= ~(toClear << FEnv::ExceptionStatusFlagsBitPosition);
+  FEnv::writeStatusWord(statusWord);
   return 0;
 }
 
@@ -115,8 +115,8 @@ static inline int setExcept(int excepts) {
 static inline int raiseExcept(int excepts) {
   float zero = 0.0f;
   float one = 1.0f;
-  float largeValue = FPBits<float>(FPBits<float>::maxNormal);
-  float smallValue = FPBits<float>(FPBits<float>::minNormal);
+  float largeValue = float(FPBits<float>(FPBits<float>::maxNormal));
+  float smallValue = float(FPBits<float>(FPBits<float>::minNormal));
   auto divfunc = [](float a, float b) {
     __asm__ __volatile__("ldr  s0, %0\n\t"
                          "ldr  s1, %1\n\t"

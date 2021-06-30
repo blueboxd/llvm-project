@@ -390,7 +390,6 @@ protected:
   bool visitPtrToInt(PtrToIntInst &I);
   bool visitIntToPtr(IntToPtrInst &I);
   bool visitCastInst(CastInst &I);
-  bool visitUnaryInstruction(UnaryInstruction &I);
   bool visitCmpInst(CmpInst &I);
   bool visitSub(BinaryOperator &I);
   bool visitBinaryOperator(BinaryOperator &I);
@@ -411,19 +410,18 @@ protected:
   bool visitUnreachableInst(UnreachableInst &I);
 
 public:
-  CallAnalyzer(
-      Function &Callee, CallBase &Call, const TargetTransformInfo &TTI,
-      function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
-      function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
-      ProfileSummaryInfo *PSI = nullptr,
-      OptimizationRemarkEmitter *ORE = nullptr)
+  CallAnalyzer(Function &Callee, CallBase &Call, const TargetTransformInfo &TTI,
+               function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
+               function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
+               ProfileSummaryInfo *PSI = nullptr,
+               OptimizationRemarkEmitter *ORE = nullptr)
       : TTI(TTI), GetAssumptionCache(GetAssumptionCache), GetBFI(GetBFI),
         PSI(PSI), F(Callee), DL(F.getParent()->getDataLayout()), ORE(ORE),
         CandidateCall(Call), EnableLoadElimination(true) {}
 
   InlineResult analyze();
 
-  Optional<Constant*> getSimplifiedValue(Instruction *I) {
+  Optional<Constant *> getSimplifiedValue(Instruction *I) {
     if (SimplifiedValues.find(I) != SimplifiedValues.end())
       return SimplifiedValues[I];
     return None;
@@ -951,8 +949,8 @@ void CallAnalyzer::disableSROAForArg(AllocaInst *SROAArg) {
   disableLoadElimination();
 }
 
-void InlineCostAnnotationWriter::emitInstructionAnnot(const Instruction *I,
-                                                formatted_raw_ostream &OS) {
+void InlineCostAnnotationWriter::emitInstructionAnnot(
+    const Instruction *I, formatted_raw_ostream &OS) {
   // The cost of inlining of the given instruction is printed always.
   // The threshold delta is printed only when it is non-zero. It happens
   // when we decided to give a bonus at a particular instruction.
@@ -1040,6 +1038,8 @@ bool CallAnalyzer::isGEPFree(GetElementPtrInst &GEP) {
 }
 
 bool CallAnalyzer::visitAlloca(AllocaInst &I) {
+  disableSROA(I.getOperand(0));
+
   // Check whether inlining will turn a dynamic alloca into a static
   // alloca and handle that case.
   if (I.isArrayAllocation()) {
@@ -1055,13 +1055,11 @@ bool CallAnalyzer::visitAlloca(AllocaInst &I) {
       // is needed to track stack usage during inlining.
       Type *Ty = I.getAllocatedType();
       AllocatedSize = SaturatingMultiplyAdd(
-          AllocSize->getLimitedValue(), DL.getTypeAllocSize(Ty).getKnownMinSize(),
-          AllocatedSize);
-      if (AllocatedSize > InlineConstants::MaxSimplifiedDynamicAllocaToInline) {
+          AllocSize->getLimitedValue(),
+          DL.getTypeAllocSize(Ty).getKnownMinSize(), AllocatedSize);
+      if (AllocatedSize > InlineConstants::MaxSimplifiedDynamicAllocaToInline)
         HasDynamicAlloca = true;
-        return false;
-      }
-      return Base::visitAlloca(I);
+      return false;
     }
   }
 
@@ -1072,15 +1070,13 @@ bool CallAnalyzer::visitAlloca(AllocaInst &I) {
         SaturatingAdd(DL.getTypeAllocSize(Ty).getKnownMinSize(), AllocatedSize);
   }
 
-  // We will happily inline static alloca instructions.
-  if (I.isStaticAlloca())
-    return Base::visitAlloca(I);
-
   // FIXME: This is overly conservative. Dynamic allocas are inefficient for
   // a variety of reasons, and so we would like to not inline them into
   // functions which don't currently have a dynamic alloca. This simply
   // disables inlining altogether in the presence of a dynamic alloca.
-  HasDynamicAlloca = true;
+  if (!I.isStaticAlloca())
+    HasDynamicAlloca = true;
+
   return false;
 }
 
@@ -1213,11 +1209,11 @@ bool CallAnalyzer::visitGetElementPtr(GetElementPtrInst &I) {
 
   if (!DisableGEPConstOperand)
     if (simplifyInstruction(I, [&](SmallVectorImpl<Constant *> &COps) {
-        SmallVector<Constant *, 2> Indices;
-        for (unsigned int Index = 1 ; Index < COps.size() ; ++Index)
+          SmallVector<Constant *, 2> Indices;
+          for (unsigned int Index = 1; Index < COps.size(); ++Index)
             Indices.push_back(COps[Index]);
-        return ConstantExpr::getGetElementPtr(I.getSourceElementType(), COps[0],
-                                              Indices, I.isInBounds());
+          return ConstantExpr::getGetElementPtr(
+              I.getSourceElementType(), COps[0], Indices, I.isInBounds());
         }))
       return true;
 
@@ -1365,19 +1361,6 @@ bool CallAnalyzer::visitCastInst(CastInst &I) {
 
   return TTI.getUserCost(&I, TargetTransformInfo::TCK_SizeAndLatency) ==
          TargetTransformInfo::TCC_Free;
-}
-
-bool CallAnalyzer::visitUnaryInstruction(UnaryInstruction &I) {
-  Value *Operand = I.getOperand(0);
-  if (simplifyInstruction(I, [&](SmallVectorImpl<Constant *> &COps) {
-        return ConstantFoldInstOperands(&I, COps[0], DL);
-      }))
-    return true;
-
-  // Disable any SROA on the argument to arbitrary unary instructions.
-  disableSROA(Operand);
-
-  return false;
 }
 
 bool CallAnalyzer::paramHasAttr(Argument *A, Attribute::AttrKind Attr) {
@@ -1775,8 +1758,8 @@ bool CallAnalyzer::visitExtractValue(ExtractValueInst &I) {
       }))
     return true;
 
-  // SROA can look through these but give them a cost.
-  return false;
+  // SROA can't look through these, but they may be free.
+  return Base::visitExtractValue(I);
 }
 
 bool CallAnalyzer::visitInsertValue(InsertValueInst &I) {
@@ -1788,8 +1771,8 @@ bool CallAnalyzer::visitInsertValue(InsertValueInst &I) {
       }))
     return true;
 
-  // SROA can look through these but give them a cost.
-  return false;
+  // SROA can't look through these, but they may be free.
+  return Base::visitInsertValue(I);
 }
 
 /// Try to simplify a call site.
@@ -1884,6 +1867,11 @@ bool CallAnalyzer::visitCallBase(CallBase &Call) {
     case Intrinsic::vastart:
       InitsVargArgs = true;
       return false;
+    case Intrinsic::launder_invariant_group:
+    case Intrinsic::strip_invariant_group:
+      if (auto *SROAArg = getSROAArgForValueOrNull(II->getOperand(0)))
+        SROAArgValues[II] = SROAArg;
+      return true;
     }
   }
 
@@ -1960,9 +1948,9 @@ bool CallAnalyzer::visitSelectInst(SelectInst &SI) {
   }
 
   // Select condition is a constant.
-  Value *SelectedV = CondC->isAllOnesValue()
-                         ? TrueVal
-                         : (CondC->isNullValue()) ? FalseVal : nullptr;
+  Value *SelectedV = CondC->isAllOnesValue()  ? TrueVal
+                     : (CondC->isNullValue()) ? FalseVal
+                                              : nullptr;
   if (!SelectedV) {
     // Condition is a vector constant that is not all 1s or all 0s.  If all
     // operands are constants, ConstantExpr::getSelect() can handle the cases
@@ -2427,9 +2415,7 @@ void InlineCostCallAnalyzer::print() {
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 /// Dump stats about this call's analysis.
-LLVM_DUMP_METHOD void InlineCostCallAnalyzer::dump() {
-  print();
-}
+LLVM_DUMP_METHOD void InlineCostCallAnalyzer::dump() { print(); }
 #endif
 
 /// Test that there are no attribute conflicts between Caller and Callee
@@ -2455,7 +2441,7 @@ int llvm::getCallsiteCost(CallBase &Call, const DataLayout &DL) {
       // We approximate the number of loads and stores needed by dividing the
       // size of the byval type by the target's pointer size.
       PointerType *PTy = cast<PointerType>(Call.getArgOperand(I)->getType());
-      unsigned TypeSize = DL.getTypeSizeInBits(PTy->getElementType());
+      unsigned TypeSize = DL.getTypeSizeInBits(Call.getParamByValType(I));
       unsigned AS = PTy->getAddressSpace();
       unsigned PointerSize = DL.getPointerSizeInBits(AS);
       // Ceiling division.
@@ -2783,8 +2769,8 @@ PreservedAnalyses
 InlineCostAnnotationPrinterPass::run(Function &F,
                                      FunctionAnalysisManager &FAM) {
   PrintInstructionComments = true;
-  std::function<AssumptionCache &(Function &)> GetAssumptionCache = [&](
-      Function &F) -> AssumptionCache & {
+  std::function<AssumptionCache &(Function &)> GetAssumptionCache =
+      [&](Function &F) -> AssumptionCache & {
     return FAM.getResult<AssumptionAnalysis>(F);
   };
   Module *M = F.getParent();

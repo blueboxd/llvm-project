@@ -533,6 +533,7 @@ void Formula::canonicalize(const Loop &L) {
     if (I != BaseRegs.end())
       std::swap(ScaledReg, *I);
   }
+  assert(isCanonical(L) && "Failed to canonicalize?");
 }
 
 /// Get rid of the scale in the formula.
@@ -665,7 +666,7 @@ static bool isMulSExtable(const SCEVMulExpr *M, ScalarEvolution &SE) {
 
 /// Return an expression for LHS /s RHS, if it can be determined and if the
 /// remainder is known to be zero, or null otherwise. If IgnoreSignificantBits
-/// is true, expressions like (X * Y) /s Y are simplified to Y, ignoring that
+/// is true, expressions like (X * Y) /s Y are simplified to X, ignoring that
 /// the multiplication may overflow, which is useful when the result will be
 /// used in a context where the most significant bits are ignored.
 static const SCEV *getExactSDiv(const SCEV *LHS, const SCEV *RHS,
@@ -733,6 +734,21 @@ static const SCEV *getExactSDiv(const SCEV *LHS, const SCEV *RHS,
   // Check for a multiply operand that we can pull RHS out of.
   if (const SCEVMulExpr *Mul = dyn_cast<SCEVMulExpr>(LHS)) {
     if (IgnoreSignificantBits || isMulSExtable(Mul, SE)) {
+      // Handle special case C1*X*Y /s C2*X*Y.
+      if (const SCEVMulExpr *MulRHS = dyn_cast<SCEVMulExpr>(RHS)) {
+        if (IgnoreSignificantBits || isMulSExtable(MulRHS, SE)) {
+          const SCEVConstant *LC = dyn_cast<SCEVConstant>(Mul->getOperand(0));
+          const SCEVConstant *RC =
+              dyn_cast<SCEVConstant>(MulRHS->getOperand(0));
+          if (LC && RC) {
+            SmallVector<const SCEV *, 4> LOps(drop_begin(Mul->operands()));
+            SmallVector<const SCEV *, 4> ROps(drop_begin(MulRHS->operands()));
+            if (LOps == ROps)
+              return getExactSDiv(LC, RC, SE, IgnoreSignificantBits);
+          }
+        }
+      }
+
       SmallVector<const SCEV *, 4> Ops;
       bool Found = false;
       for (const SCEV *S : Mul->operands()) {
@@ -1009,9 +1025,9 @@ static bool isAMCompletelyFolded(const TargetTransformInfo &TTI,
                                  const LSRUse &LU, const Formula &F);
 
 // Get the cost of the scaling factor used in F for LU.
-static unsigned getScalingFactorCost(const TargetTransformInfo &TTI,
-                                     const LSRUse &LU, const Formula &F,
-                                     const Loop &L);
+static InstructionCost getScalingFactorCost(const TargetTransformInfo &TTI,
+                                            const LSRUse &LU, const Formula &F,
+                                            const Loop &L);
 
 namespace {
 
@@ -1360,7 +1376,7 @@ void Cost::RateFormula(const Formula &F,
   C.NumBaseAdds += (F.UnfoldedOffset != 0);
 
   // Accumulate non-free scaling amounts.
-  C.ScaleCost += getScalingFactorCost(*TTI, LU, F, *L);
+  C.ScaleCost += *getScalingFactorCost(*TTI, LU, F, *L).getValue();
 
   // Tally up the non-zero immediates.
   for (const LSRFixup &Fixup : LU.Fixups) {
@@ -1757,9 +1773,9 @@ static bool isAMCompletelyFolded(const TargetTransformInfo &TTI,
                               F.Scale);
 }
 
-static unsigned getScalingFactorCost(const TargetTransformInfo &TTI,
-                                     const LSRUse &LU, const Formula &F,
-                                     const Loop &L) {
+static InstructionCost getScalingFactorCost(const TargetTransformInfo &TTI,
+                                            const LSRUse &LU, const Formula &F,
+                                            const Loop &L) {
   if (!F.Scale)
     return 0;
 
@@ -1772,14 +1788,14 @@ static unsigned getScalingFactorCost(const TargetTransformInfo &TTI,
   switch (LU.Kind) {
   case LSRUse::Address: {
     // Check the scaling factor cost with both the min and max offsets.
-    int ScaleCostMinOffset = TTI.getScalingFactorCost(
+    InstructionCost ScaleCostMinOffset = TTI.getScalingFactorCost(
         LU.AccessTy.MemTy, F.BaseGV, F.BaseOffset + LU.MinOffset, F.HasBaseReg,
         F.Scale, LU.AccessTy.AddrSpace);
-    int ScaleCostMaxOffset = TTI.getScalingFactorCost(
+    InstructionCost ScaleCostMaxOffset = TTI.getScalingFactorCost(
         LU.AccessTy.MemTy, F.BaseGV, F.BaseOffset + LU.MaxOffset, F.HasBaseReg,
         F.Scale, LU.AccessTy.AddrSpace);
 
-    assert(ScaleCostMinOffset >= 0 && ScaleCostMaxOffset >= 0 &&
+    assert(ScaleCostMinOffset.isValid() && ScaleCostMaxOffset.isValid() &&
            "Legal addressing mode has an illegal cost!");
     return std::max(ScaleCostMinOffset, ScaleCostMaxOffset);
   }
@@ -2347,6 +2363,7 @@ ICmpInst *LSRInstance::OptimizeMax(ICmpInst *Cond, IVStrideUse* &CondUse) {
     new ICmpInst(Cond, Pred, Cond->getOperand(0), NewRHS, "scmp");
 
   // Delete the max calculation instructions.
+  NewCond->setDebugLoc(Cond->getDebugLoc());
   Cond->replaceAllUsesWith(NewCond);
   CondUse->setUser(NewCond);
   Instruction *Cmp = cast<Instruction>(Sel->getOperand(0));
@@ -2476,7 +2493,7 @@ LSRInstance::OptimizeLoopTermCond() {
     // It's possible for the setcc instruction to be anywhere in the loop, and
     // possible for it to have multiple users.  If it is not immediately before
     // the exiting block branch, move it.
-    if (&*++BasicBlock::iterator(Cond) != TermBr) {
+    if (Cond->getNextNonDebugInstruction() != TermBr) {
       if (Cond->hasOneUse()) {
         Cond->moveBefore(TermBr);
       } else {
@@ -2696,13 +2713,13 @@ void LSRInstance::CollectInterestingTypesAndFactors() {
       if (const SCEVConstant *Factor =
             dyn_cast_or_null<SCEVConstant>(getExactSDiv(NewStride, OldStride,
                                                         SE, true))) {
-        if (Factor->getAPInt().getMinSignedBits() <= 64)
+        if (Factor->getAPInt().getMinSignedBits() <= 64 && !Factor->isZero())
           Factors.insert(Factor->getAPInt().getSExtValue());
       } else if (const SCEVConstant *Factor =
                    dyn_cast_or_null<SCEVConstant>(getExactSDiv(OldStride,
                                                                NewStride,
                                                                SE, true))) {
-        if (Factor->getAPInt().getMinSignedBits() <= 64)
+        if (Factor->getAPInt().getMinSignedBits() <= 64 && !Factor->isZero())
           Factors.insert(Factor->getAPInt().getSExtValue());
       }
     }
@@ -3792,8 +3809,7 @@ void LSRInstance::GenerateConstantOffsetsImpl(
     Formula F = Base;
     F.BaseOffset = (uint64_t)Base.BaseOffset - Offset;
 
-    if (isLegalUse(TTI, LU.MinOffset - Offset, LU.MaxOffset - Offset, LU.Kind,
-                   LU.AccessTy, F)) {
+    if (isLegalUse(TTI, LU.MinOffset, LU.MaxOffset, LU.Kind, LU.AccessTy, F)) {
       // Add the offset to the base register.
       const SCEV *NewG = SE.getAddExpr(SE.getConstant(G->getType(), Offset), G);
       // If it cancelled out, drop the base register, otherwise update it.
@@ -3904,6 +3920,7 @@ void LSRInstance::GenerateICmpZeroScales(LSRUse &LU, unsigned LUIdx,
     if (Base.BaseOffset == std::numeric_limits<int64_t>::min() && Factor == -1)
       continue;
     int64_t NewBaseOffset = (uint64_t)Base.BaseOffset * Factor;
+    assert(Factor != 0 && "Zero factor not expected!");
     if (NewBaseOffset / Factor != Base.BaseOffset)
       continue;
     // If the offset will be truncated at this use, check that it is in bounds.
