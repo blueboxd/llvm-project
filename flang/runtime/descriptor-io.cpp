@@ -19,7 +19,7 @@ std::optional<bool> DefinedFormattedIo(IoStatementState &io,
           peek->descriptor == DataEdit::ListDirected)) {
     // User-defined derived type formatting
     IoErrorHandler &handler{io.GetIoErrorHandler()};
-    DataEdit edit{*io.GetNextDataEdit()}; // consume it this time
+    DataEdit edit{*io.GetNextDataEdit(1)}; // now consume it; no repeats
     RUNTIME_CHECK(handler, edit.descriptor == peek->descriptor);
     char ioType[2 + edit.maxIoTypeChars];
     auto ioTypeLen{std::size_t{2} /*"DT"*/ + edit.ioTypeChars};
@@ -32,7 +32,7 @@ std::optional<bool> DefinedFormattedIo(IoStatementState &io,
           ioType, io.mutableModes().inNamelist ? "NAMELIST" : "LISTDIRECTED");
       ioTypeLen = std::strlen(ioType);
     }
-    StaticDescriptor<0, true> statDesc;
+    StaticDescriptor<1, true> statDesc;
     Descriptor &vListDesc{statDesc.descriptor()};
     vListDesc.Establish(TypeCategory::Integer, sizeof(int), nullptr, 1);
     vListDesc.set_base_addr(edit.vList);

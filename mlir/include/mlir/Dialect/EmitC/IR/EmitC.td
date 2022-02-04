@@ -23,10 +23,8 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 //===----------------------------------------------------------------------===//
 
 // Base class for EmitC dialect ops.
-class EmitC_Op<string mnemonic, list<OpTrait> traits = []>
-    : Op<EmitC_Dialect, mnemonic, traits> {
-  let verifier = "return ::verify(*this);";
-}
+class EmitC_Op<string mnemonic, list<Trait> traits = []>
+    : Op<EmitC_Dialect, mnemonic, traits>;
 
 def EmitC_ApplyOp : EmitC_Op<"apply", []> {
   let summary = "Apply operation";
@@ -54,6 +52,7 @@ def EmitC_ApplyOp : EmitC_Op<"apply", []> {
   let assemblyFormat = [{
     $applicableOperator `(` $operand `)` attr-dict `:` functional-type($operand, results)
   }];
+  let hasVerifier = 1;
 }
 
 def EmitC_CallOp : EmitC_Op<"call", []> {
@@ -85,6 +84,7 @@ def EmitC_CallOp : EmitC_Op<"call", []> {
   let assemblyFormat = [{
     $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
   }];
+  let hasVerifier = 1;
 }
 
 def EmitC_ConstantOp : EmitC_Op<"constant", [ConstantLike]> {
@@ -113,6 +113,7 @@ def EmitC_ConstantOp : EmitC_Op<"constant", [ConstantLike]> {
   let results = (outs AnyType);
 
   let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
 def EmitC_IncludeOp
@@ -126,12 +127,15 @@ def EmitC_IncludeOp
 
     ```mlir
     // Custom form defining the inclusion of `<myheader>`.
-    emitc.include "myheader.h" is_standard_include
+    emitc.include <"myheader.h">
 
     // Generic form of the same operation.
     "emitc.include" (){include = "myheader.h", is_standard_include} : () -> ()
 
-    // Generic form defining the inclusion of `"myheader"`.
+    // Custom form defining the inclusion of `"myheader"`.
+    emitc.include "myheader.h"
+
+    // Generic form of the same operation.
     "emitc.include" (){include = "myheader.h"} : () -> ()
     ```
   }];
@@ -139,10 +143,8 @@ def EmitC_IncludeOp
     Arg<StrAttr, "source file to include">:$include,
     UnitAttr:$is_standard_include
   );
-  let assemblyFormat = [{
-    $include attr-dict (`is_standard_include` $is_standard_include^)?
-  }];
-  let verifier = ?;
+  let printer = [{ return ::print(p, *this); }];
+  let parser = [{ return ::parse$cppClass(parser, result); }];
 }
 
 #endif // MLIR_DIALECT_EMITC_IR_EMITC

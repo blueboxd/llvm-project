@@ -7,6 +7,7 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: libcpp-no-concepts
+// UNSUPPORTED: libcpp-has-no-incomplete-format
 
 // <format>
 
@@ -40,7 +41,7 @@ constexpr bool test() {
 #ifndef _LIBCPP_HAS_NO_CHAR8_T
   test(u8"abc");
 #endif
-#ifndef _LIBCPP_HAS_NO_UNICODE_CHARS
+#ifndef TEST_HAS_NO_UNICODE_CHARS
   test(u"abc");
   test(U"abc");
 #endif

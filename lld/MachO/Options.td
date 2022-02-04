@@ -64,6 +64,34 @@ def icf_eq: Joined<["--"], "icf=">,
     HelpText<"Set level for identical code folding (default: none)">,
     MetaVarName<"[none,safe,all]">,
     Group<grp_lld>;
+def lto_O: Joined<["--"], "lto-O">,
+    HelpText<"Set optimization level for LTO (default: 2)">,
+    MetaVarName<"<opt-level>">,
+    Group<grp_lld>;
+def thinlto_cache_policy: Joined<["--"], "thinlto-cache-policy=">,
+    HelpText<"Pruning policy for the ThinLTO cache">,
+    Group<grp_lld>;
+def O : JoinedOrSeparate<["-"], "O">,
+    HelpText<"Optimize output file size">;
+def start_lib: Flag<["--"], "start-lib">,
+    HelpText<"Start a grouping of objects that should be treated as if they were together in an archive">;
+def end_lib: Flag<["--"], "end-lib">,
+    HelpText<"End a grouping of objects that should be treated as if they were together in an archive">;
+def no_warn_dylib_install_name: Joined<["--"], "no-warn-dylib-install-name">,
+    HelpText<"Do not warn on -install-name if -dylib is not passed (default)">,
+    Group<grp_lld>;
+def warn_dylib_install_name: Joined<["--"], "warn-dylib-install-name">,
+    HelpText<"Warn on -install-name if -dylib is not passed">,
+    Group<grp_lld>;
+def call_graph_profile_sort: Flag<["--"], "call-graph-profile-sort">,
+    HelpText<"Reorder sections with call graph profile (default)">,
+    Group<grp_lld>;
+def no_call_graph_profile_sort : Flag<["--"], "no-call-graph-profile-sort">,
+    HelpText<"Do not reorder sections with call graph profile">,
+    Group<grp_lld>;
+def print_symbol_order: Joined<["--"], "print-symbol-order=">,
+    HelpText<"Print a symbol order specified by --call-graph-profile-sort into the specified file">,
+    Group<grp_lld>;
 
 // This is a complete Options.td compiled from Apple's ld(1) manpage
 // dated 2018-03-07 and cross checked with ld64 source code in repo
@@ -199,6 +227,9 @@ def F : JoinedOrSeparate<["-"], "F">,
 def all_load : Flag<["-"], "all_load">,
     HelpText<"Load all members of all static archive libraries">,
     Group<grp_libs>;
+def noall_load : Flag<["-"], "noall_load">,
+    HelpText<"Don't load all static members from archives, this is the default, this negates -all_load">,
+    Group<grp_libs>;
 def ObjC : Flag<["-"], "ObjC">,
     HelpText<"Load all members of static archives that are an Objective-C class or category.">,
     Group<grp_libs>;
@@ -220,6 +251,10 @@ def segcreate : MultiArg<["-"], "segcreate", 3>,
     MetaVarName<"<segment> <section> <file>">,
     Alias<sectcreate>,
     HelpText<"Alias for -sectcreate">,
+    Group<grp_content>;
+def add_empty_section : MultiArg<["-"], "add_empty_section", 2>,
+    MetaVarName<"<segment> <section>">,
+    HelpText<"Create an empty <section> in <segment>">,
     Group<grp_content>;
 def filelist : Separate<["-"], "filelist">,
     MetaVarName<"<file>">,
@@ -281,6 +316,7 @@ def no_branch_islands : Flag<["-"], "no_branch_islands">,
     Group<grp_opts>;
 def no_deduplicate : Flag<["-"], "no_deduplicate">,
     HelpText<"Disable code deduplicaiton (synonym for `--icf=none')">,
+    Alias<icf_eq>, AliasArgs<["none"]>,
     Group<grp_opts>;
 
 def grp_version : OptionGroup<"version">, HelpText<"VERSION TARGETING">;
@@ -420,8 +456,7 @@ def allow_stack_execute : Flag<["-"], "allow_stack_execute">,
     Flags<[HelpHidden]>,
     Group<grp_main>;
 def export_dynamic : Flag<["-"], "export_dynamic">,
-    HelpText<"Preserve all global symbols during LTO">,
-    Flags<[HelpHidden]>,
+    HelpText<"Preserve all global symbols during LTO and when dead-stripping executables">,
     Group<grp_main>;
 
 def grp_bundle : OptionGroup<"bundle">, HelpText<"CREATING A BUNDLE">;
@@ -548,7 +583,6 @@ def grp_symtab : OptionGroup<"symtab">, HelpText<"SYMBOL TABLE">;
 
 def S : Flag<["-"], "S">,
     HelpText<"Strip debug information (STABS or DWARF) from the output">,
-    Flags<[HelpHidden]>,
     Group<grp_symtab>;
 def x : Flag<["-"], "x">,
     HelpText<"Exclude non-global symbols from the output symbol table">,
@@ -567,7 +601,6 @@ def non_global_symbols_no_strip_list : Separate<["-"], "non_global_symbols_no_st
 def oso_prefix : Separate<["-"], "oso_prefix">,
     MetaVarName<"<path>">,
     HelpText<"Remove the prefix <path> from OSO symbols in the debug map">,
-    Flags<[HelpHidden]>,
     Group<grp_symtab>;
 def add_ast_path : Separate<["-"], "add_ast_path">,
     MetaVarName<"<path>">,
@@ -686,12 +719,10 @@ def allow_heap_execute : Flag<["-"], "allow_heap_execute">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
 def application_extension : Flag<["-"], "application_extension">,
-    HelpText<"Designate the linker output as safe for use in an application extension">,
-    Flags<[HelpHidden]>,
+    HelpText<"Mark output as safe for use in an application extension, and validate that linked dylibs are safe">,
     Group<grp_rare>;
 def no_application_extension : Flag<["-"], "no_application_extension">,
-    HelpText<"Designate the linker output as unsafe for use in an application extension">,
-    Flags<[HelpHidden]>,
+    HelpText<"Disable application extension functionality (default)">,
     Group<grp_rare>;
 def fatal_warnings : Flag<["-"], "fatal_warnings">,
     HelpText<"Treat warnings as errors">,
@@ -776,9 +807,8 @@ def client_name : Separate<["-"], "client_name">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
 def umbrella : Separate<["-"], "umbrella">,
-    MetaVarName<"<<name>>">,
-    HelpText<"Re-export this dylib through the umbrella framework <name>a">,
-    Flags<[HelpHidden]>,
+    MetaVarName<"<name>">,
+    HelpText<"Re-export this dylib through the umbrella framework <name>">,
     Group<grp_rare>;
 def headerpad : Separate<["-"], "headerpad">,
     MetaVarName<"<size>">,
@@ -858,7 +888,6 @@ def no_arch_warnings : Flag<["-"], "no_arch_warnings">,
     Group<grp_rare>;
 def arch_errors_fatal : Flag<["-"], "arch_errors_fatal">,
     HelpText<"Escalate to errors any warnings about inputs whose architecture does not match the -arch option">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def e : Separate<["-"], "e">,
     MetaVarName<"<symbol>">,
@@ -870,12 +899,10 @@ def w : Flag<["-"], "w">,
     Group<grp_rare>;
 def final_output : Separate<["-"], "final_output">,
     MetaVarName<"<name>">,
-    HelpText<"Specify the dylib install name if -install_name is not used--used by compiler driver for multiple -arch arguments">,
-    Flags<[HelpHidden]>,
+    HelpText<"Specify dylib install name if -install_name is not used; used by compiler driver for multiple -arch arguments">,
     Group<grp_rare>;
 def arch_multiple : Flag<["-"], "arch_multiple">,
     HelpText<"Augment error and warning messages with the architecture name">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def dot : Separate<["-"], "dot">,
     MetaVarName<"<path>">,
@@ -917,22 +944,18 @@ def object_path_lto : Separate<["-"], "object_path_lto">,
 def cache_path_lto : Separate<["-"], "cache_path_lto">,
     MetaVarName<"<path>">,
     HelpText<"Use <path> as a directory for the incremental LTO cache">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def prune_interval_lto : Separate<["-"], "prune_interval_lto">,
     MetaVarName<"<seconds>">,
     HelpText<"Prune the incremental LTO cache after <seconds> (-1 disables pruning)">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def prune_after_lto : Separate<["-"], "prune_after_lto">,
     MetaVarName<"<seconds>">,
     HelpText<"Remove LTO cache entries after <seconds>">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def max_relative_cache_size_lto : Separate<["-"], "max_relative_cache_size_lto">,
     MetaVarName<"<percent>">,
     HelpText<"Limit the incremental LTO cache growth to <percent> of free disk, space">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def page_align_data_atoms : Flag<["-"], "page_align_data_atoms">,
     HelpText<"Distribute global variables on separate pages so page used/dirty status can guide creation of an order file to cluster commonly used/dirty globals">,
@@ -947,6 +970,9 @@ def mllvm : Separate<["-"], "mllvm">,
     Group<grp_rare>;
 def mcpu : Separate<["-"], "mcpu">,
     HelpText<"Processor family target for LTO code generation">,
+    Group<grp_rare>;
+def no_dtrace_dof : Flag<["-"], "no_dtrace_dof">,
+    HelpText<"Disable dtrace-dof processing (default).">,
     Group<grp_rare>;
 
 def grp_deprecated : OptionGroup<"deprecated">, HelpText<"DEPRECATED">;
@@ -972,10 +998,6 @@ def single_module : Flag<["-"], "single_module">,
     Group<grp_deprecated>;
 def no_dead_strip_inits_and_terms : Flag<["-"], "no_dead_strip_inits_and_terms">,
     HelpText<"Unnecessary option: initialization and termination are roots of the dead strip graph, so never dead stripped">,
-    Flags<[HelpHidden]>,
-    Group<grp_deprecated>;
-def noall_load : Flag<["-"], "noall_load">,
-    HelpText<"Unnecessary option: this is already the default">,
     Flags<[HelpHidden]>,
     Group<grp_deprecated>;
 
@@ -1273,15 +1295,7 @@ def no_compact_unwind : Flag<["-"], "no_compact_unwind">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
-def no_dtrace_dof : Flag<["-"], "no_dtrace_dof">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
 def no_new_main : Flag<["-"], "no_new_main">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
-def objc_abi_version : Separate<["-"], "objc_abi_version">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
@@ -1328,3 +1342,10 @@ def new_linker : Flag<["-"], "new_linker">,
     HelpText<"This option is ignored in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_ignored>;
+
+def grp_ignored_silently : OptionGroup<"ignored_silently">, HelpText<"IGNORED SILENTLY">;
+
+def objc_abi_version : Separate<["-"], "objc_abi_version">,
+    HelpText<"This option only applies to i386 in ld64">,
+    Flags<[HelpHidden]>,
+    Group<grp_ignored_silently>;

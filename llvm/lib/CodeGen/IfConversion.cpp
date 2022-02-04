@@ -1211,11 +1211,11 @@ bool IfConverter::FeasibilityAnalysis(BBInfo &BBI,
 void IfConverter::AnalyzeBlock(
     MachineBasicBlock &MBB, std::vector<std::unique_ptr<IfcvtToken>> &Tokens) {
   struct BBState {
-    BBState(MachineBasicBlock &MBB) : MBB(&MBB), SuccsAnalyzed(false) {}
+    BBState(MachineBasicBlock &MBB) : MBB(&MBB) {}
     MachineBasicBlock *MBB;
 
     /// This flag is true if MBB's successors have been analyzed.
-    bool SuccsAnalyzed;
+    bool SuccsAnalyzed = false;
   };
 
   // Push MBB to the stack.
@@ -1564,8 +1564,8 @@ bool IfConverter::IfConvertSimple(BBInfo &BBI, IfcvtKind Kind) {
   if (MRI->tracksLiveness()) {
     // Initialize liveins to the first BB. These are potentially redefined by
     // predicated instructions.
-    Redefs.addLiveIns(CvtMBB);
-    Redefs.addLiveIns(NextMBB);
+    Redefs.addLiveInsNoPristines(CvtMBB);
+    Redefs.addLiveInsNoPristines(NextMBB);
   }
 
   // Remove the branches from the entry so we can add the contents of the true
@@ -1665,8 +1665,8 @@ bool IfConverter::IfConvertTriangle(BBInfo &BBI, IfcvtKind Kind) {
   // predicated instructions.
   Redefs.init(*TRI);
   if (MRI->tracksLiveness()) {
-    Redefs.addLiveIns(CvtMBB);
-    Redefs.addLiveIns(NextMBB);
+    Redefs.addLiveInsNoPristines(CvtMBB);
+    Redefs.addLiveInsNoPristines(NextMBB);
   }
 
   bool HasEarlyExit = CvtBBI->FalseBB != nullptr;
@@ -1828,8 +1828,8 @@ bool IfConverter::IfConvertDiamondCommon(
   //   after tracking the BB1 instructions.
   Redefs.init(*TRI);
   if (MRI->tracksLiveness()) {
-    Redefs.addLiveIns(MBB1);
-    Redefs.addLiveIns(MBB2);
+    Redefs.addLiveInsNoPristines(MBB1);
+    Redefs.addLiveInsNoPristines(MBB2);
   }
 
   // Remove the duplicated instructions at the beginnings of both paths.

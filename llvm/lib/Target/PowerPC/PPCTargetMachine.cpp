@@ -36,10 +36,10 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Scalar.h"
@@ -123,6 +123,8 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializePowerPCTarget() {
   initializePPCTLSDynamicCallPass(PR);
   initializePPCMIPeepholePass(PR);
   initializePPCLowerMASSVEntriesPass(PR);
+  initializePPCGenScalarMASSEntriesPass(PR);
+  initializePPCExpandAtomicPseudoPass(PR);
   initializeGlobalISel(PR);
 }
 
@@ -428,6 +430,12 @@ void PPCPassConfig::addIRPasses() {
   // Lower generic MASSV routines to PowerPC subtarget-specific entries.
   addPass(createPPCLowerMASSVEntriesPass());
 
+  // Generate PowerPC target-specific entries for scalar math functions
+  // that are available in IBM MASS (scalar) library.
+  if (TM->getOptLevel() == CodeGenOpt::Aggressive) {
+    addPass(createPPCGenScalarMASSEntriesPass());
+  }
+
   // If explicitly requested, add explicit data prefetch intrinsics.
   if (EnablePrefetch.getNumOccurrences() > 0)
     addPass(createLoopDataPrefetchPass());
@@ -539,6 +547,10 @@ void PPCPassConfig::addPreEmitPass() {
 }
 
 void PPCPassConfig::addPreEmitPass2() {
+  // Schedule the expansion of AMOs at the last possible moment, avoiding the
+  // possibility for other passes to break the requirements for forward
+  // progress in the LL/SC block.
+  addPass(createPPCExpandAtomicPseudoPass());
   // Must run branch selection immediately preceding the asm printer.
   addPass(createPPCBranchSelectionPass());
 }

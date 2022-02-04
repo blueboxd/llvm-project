@@ -13,7 +13,6 @@
 #include "llvm/IR/Module.h"
 #include "SymbolTableListTraitsImpl.h"
 #include "llvm/ADT/Optional.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -39,7 +38,6 @@
 #include "llvm/IR/TypeFinder.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/ValueSymbolTable.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
@@ -112,6 +110,10 @@ Module::createRNG(const StringRef Name) const {
 /// if a global with the specified name is not found.
 GlobalValue *Module::getNamedValue(StringRef Name) const {
   return cast_or_null<GlobalValue>(getValueSymbolTable().lookup(Name));
+}
+
+unsigned Module::getNumNamedValues() const {
+  return getValueSymbolTable().size();
 }
 
 /// getMDKindID - Return a unique non-zero ID for the specified metadata kind.
@@ -506,7 +508,7 @@ std::string Module::getUniqueIntrinsicName(StringRef BaseName, Intrinsic::ID Id,
     }
 
     // A declaration with this name already exists. Remember it.
-    FunctionType *FT = dyn_cast<FunctionType>(F->getType()->getElementType());
+    FunctionType *FT = dyn_cast<FunctionType>(F->getValueType());
     auto UinItInserted = UniquedIntrinsicNames.insert({{Id, FT}, Count});
     if (FT == Proto) {
       // It was a declaration for our prototype. This entry was allocated in the
@@ -732,7 +734,7 @@ void Module::setOverrideStackAlignment(unsigned Align) {
   addModuleFlag(ModFlagBehavior::Error, "override-stack-alignment", Align);
 }
 
-void Module::setSDKVersion(const VersionTuple &V) {
+static void addSDKVersionMD(const VersionTuple &V, Module &M, StringRef Name) {
   SmallVector<unsigned, 3> Entries;
   Entries.push_back(V.getMajor());
   if (auto Minor = V.getMinor()) {
@@ -742,12 +744,16 @@ void Module::setSDKVersion(const VersionTuple &V) {
     // Ignore the 'build' component as it can't be represented in the object
     // file.
   }
-  addModuleFlag(ModFlagBehavior::Warning, "SDK Version",
-                ConstantDataArray::get(Context, Entries));
+  M.addModuleFlag(Module::ModFlagBehavior::Warning, Name,
+                  ConstantDataArray::get(M.getContext(), Entries));
 }
 
-VersionTuple Module::getSDKVersion() const {
-  auto *CM = dyn_cast_or_null<ConstantAsMetadata>(getModuleFlag("SDK Version"));
+void Module::setSDKVersion(const VersionTuple &V) {
+  addSDKVersionMD(V, *this, "SDK Version");
+}
+
+static VersionTuple getSDKVersionMD(Metadata *MD) {
+  auto *CM = dyn_cast_or_null<ConstantAsMetadata>(MD);
   if (!CM)
     return {};
   auto *Arr = dyn_cast_or_null<ConstantDataArray>(CM->getValue());
@@ -769,6 +775,10 @@ VersionTuple Module::getSDKVersion() const {
     }
   }
   return Result;
+}
+
+VersionTuple Module::getSDKVersion() const {
+  return getSDKVersionMD(getModuleFlag("SDK Version"));
 }
 
 GlobalVariable *llvm::collectUsedGlobalVariables(
@@ -804,4 +814,23 @@ void Module::setPartialSampleProfileRatio(const ModuleSummaryIndex &Index) {
                         ProfileSummary::PSK_Sample);
     }
   }
+}
+
+StringRef Module::getDarwinTargetVariantTriple() const {
+  if (const auto *MD = getModuleFlag("darwin.target_variant.triple"))
+    return cast<MDString>(MD)->getString();
+  return "";
+}
+
+void Module::setDarwinTargetVariantTriple(StringRef T) {
+  addModuleFlag(ModFlagBehavior::Override, "darwin.target_variant.triple",
+                MDString::get(getContext(), T));
+}
+
+VersionTuple Module::getDarwinTargetVariantSDKVersion() const {
+  return getSDKVersionMD(getModuleFlag("darwin.target_variant.SDK Version"));
+}
+
+void Module::setDarwinTargetVariantSDKVersion(VersionTuple Version) {
+  addSDKVersionMD(Version, *this, "darwin.target_variant.SDK Version");
 }

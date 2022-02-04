@@ -15,8 +15,6 @@
 #define LLVM_CODEGEN_GLOBALISEL_LEGALIZERINFO_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/None.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -40,7 +38,6 @@ class LegalizerHelper;
 class MachineInstr;
 class MachineRegisterInfo;
 class MCInstrInfo;
-class GISelChangeObserver;
 
 namespace LegalizeActions {
 enum LegalizeAction : std::uint8_t {
@@ -60,7 +57,10 @@ enum LegalizeAction : std::uint8_t {
 
   /// The (vector) operation should be implemented by splitting it into
   /// sub-vectors where the operation is legal. For example a <8 x s64> add
-  /// might be implemented as 4 separate <2 x s64> adds.
+  /// might be implemented as 4 separate <2 x s64> adds. There can be a leftover
+  /// if there are not enough elements for last sub-vector e.g. <7 x s64> add
+  /// will be implemented as 3 separate <2 x s64> adds and one s64 add. Leftover
+  /// types can be avoided by doing MoreElements first.
   FewerElements,
 
   /// The (vector) operation should be implemented by widening the input
@@ -110,9 +110,17 @@ struct LegalityQuery {
   ArrayRef<LLT> Types;
 
   struct MemDesc {
-    uint64_t SizeInBits;
+    LLT MemoryTy;
     uint64_t AlignInBits;
     AtomicOrdering Ordering;
+
+    MemDesc() = default;
+    MemDesc(LLT MemoryTy, uint64_t AlignInBits, AtomicOrdering Ordering)
+        : MemoryTy(MemoryTy), AlignInBits(AlignInBits), Ordering(Ordering) {}
+    MemDesc(const MachineMemOperand &MMO)
+        : MemoryTy(MMO.getMemoryType()),
+          AlignInBits(MMO.getAlign().value() * 8),
+          Ordering(MMO.getSuccessOrdering()) {}
   };
 
   /// Operations which require memory can use this to place requirements on the
@@ -196,13 +204,12 @@ namespace LegalityPredicates {
 struct TypePairAndMemDesc {
   LLT Type0;
   LLT Type1;
-  uint64_t MemSize;
+  LLT MemTy;
   uint64_t Align;
 
   bool operator==(const TypePairAndMemDesc &Other) const {
     return Type0 == Other.Type0 && Type1 == Other.Type1 &&
-           Align == Other.Align &&
-           MemSize == Other.MemSize;
+           Align == Other.Align && MemTy == Other.MemTy;
   }
 
   /// \returns true if this memory access is legal with for the access described
@@ -210,7 +217,9 @@ struct TypePairAndMemDesc {
   bool isCompatible(const TypePairAndMemDesc &Other) const {
     return Type0 == Other.Type0 && Type1 == Other.Type1 &&
            Align >= Other.Align &&
-           MemSize == Other.MemSize;
+           // FIXME: This perhaps should be stricter, but the current legality
+           // rules are written only considering the size.
+           MemTy.getSizeInBits() == Other.MemTy.getSizeInBits();
   }
 };
 
@@ -292,6 +301,10 @@ LegalityPredicate scalarOrEltNarrowerThan(unsigned TypeIdx, unsigned Size);
 /// type that's wider than the given size.
 LegalityPredicate scalarOrEltWiderThan(unsigned TypeIdx, unsigned Size);
 
+/// True iff the specified type index is a scalar whose size is not a multiple
+/// of Size.
+LegalityPredicate sizeNotMultipleOf(unsigned TypeIdx, unsigned Size);
+
 /// True iff the specified type index is a scalar whose size is not a power of
 /// 2.
 LegalityPredicate sizeNotPow2(unsigned TypeIdx);
@@ -347,6 +360,11 @@ LegalizeMutation changeElementSizeTo(unsigned TypeIdx, unsigned FromTypeIdx);
 /// next power of 2.
 LegalizeMutation widenScalarOrEltToNextPow2(unsigned TypeIdx, unsigned Min = 0);
 
+/// Widen the scalar type or vector element type for the given type index to
+/// next multiple of \p Size.
+LegalizeMutation widenScalarOrEltToNextMultipleOf(unsigned TypeIdx,
+                                                  unsigned Size);
+
 /// Add more elements to the type for the given type index to the next power of
 /// 2.
 LegalizeMutation moreElementsToNextPow2(unsigned TypeIdx, unsigned Min = 0);
@@ -385,9 +403,9 @@ public:
 
 class LegalizeRuleSet {
   /// When non-zero, the opcode we are an alias of
-  unsigned AliasOf;
+  unsigned AliasOf = 0;
   /// If true, there is another opcode that aliases this one
-  bool IsAliasedByAnother;
+  bool IsAliasedByAnother = false;
   SmallVector<LegalizeRule, 2> Rules;
 
 #ifndef NDEBUG
@@ -412,16 +430,6 @@ class LegalizeRuleSet {
     TypeIdxsCovered.set(TypeIdx);
 #endif
     return TypeIdx;
-  }
-
-  unsigned immIdx(unsigned ImmIdx) {
-    assert(ImmIdx <= (MCOI::OPERAND_LAST_GENERIC_IMM -
-                      MCOI::OPERAND_FIRST_GENERIC_IMM) &&
-           "Imm Index is out of bounds");
-#ifndef NDEBUG
-    ImmIdxsCovered.set(ImmIdx);
-#endif
-    return ImmIdx;
   }
 
   void markAllIdxsAsCovered() {
@@ -538,7 +546,7 @@ class LegalizeRuleSet {
   }
 
 public:
-  LegalizeRuleSet() : AliasOf(0), IsAliasedByAnother(false), Rules() {}
+  LegalizeRuleSet() = default;
 
   bool isAliasedByAnother() { return IsAliasedByAnother; }
   void setIsAliasedByAnother() { IsAliasedByAnother = true; }
@@ -549,6 +557,16 @@ public:
     AliasOf = Opcode;
   }
   unsigned getAlias() const { return AliasOf; }
+
+  unsigned immIdx(unsigned ImmIdx) {
+    assert(ImmIdx <= (MCOI::OPERAND_LAST_GENERIC_IMM -
+                      MCOI::OPERAND_FIRST_GENERIC_IMM) &&
+           "Imm Index is out of bounds");
+#ifndef NDEBUG
+    ImmIdxsCovered.set(ImmIdx);
+#endif
+    return ImmIdx;
+  }
 
   /// The instruction is legal if predicate is true.
   LegalizeRuleSet &legalIf(LegalityPredicate Predicate) {
@@ -806,10 +824,21 @@ public:
   LegalizeRuleSet &customForCartesianProduct(std::initializer_list<LLT> Types) {
     return actionForCartesianProduct(LegalizeAction::Custom, Types);
   }
+  /// The instruction is custom when type indexes 0 and 1 are both in their
+  /// respective lists.
   LegalizeRuleSet &
   customForCartesianProduct(std::initializer_list<LLT> Types0,
                             std::initializer_list<LLT> Types1) {
     return actionForCartesianProduct(LegalizeAction::Custom, Types0, Types1);
+  }
+  /// The instruction is custom when when type indexes 0, 1, and 2 are all in
+  /// their respective lists.
+  LegalizeRuleSet &
+  customForCartesianProduct(std::initializer_list<LLT> Types0,
+                            std::initializer_list<LLT> Types1,
+                            std::initializer_list<LLT> Types2) {
+    return actionForCartesianProduct(LegalizeAction::Custom, Types0, Types1,
+                                     Types2);
   }
 
   /// Unconditionally custom lower.
@@ -825,6 +854,16 @@ public:
     return actionIf(
         LegalizeAction::WidenScalar, sizeNotPow2(typeIdx(TypeIdx)),
         LegalizeMutations::widenScalarOrEltToNextPow2(TypeIdx, MinSize));
+  }
+
+  /// Widen the scalar to the next multiple of Size. No effect if the
+  /// type is not a scalar or is a multiple of Size.
+  LegalizeRuleSet &widenScalarToNextMultipleOf(unsigned TypeIdx,
+                                               unsigned Size) {
+    using namespace LegalityPredicates;
+    return actionIf(
+        LegalizeAction::WidenScalar, sizeNotMultipleOf(typeIdx(TypeIdx), Size),
+        LegalizeMutations::widenScalarOrEltToNextMultipleOf(TypeIdx, Size));
   }
 
   /// Widen the scalar or vector element type to the next power of two that is
@@ -1024,6 +1063,26 @@ public:
               TypeIdx, LLT::fixed_vector(MinElements, VecTy.getElementType()));
         });
   }
+
+  /// Set number of elements to nearest larger multiple of NumElts.
+  LegalizeRuleSet &alignNumElementsTo(unsigned TypeIdx, const LLT EltTy,
+                                      unsigned NumElts) {
+    typeIdx(TypeIdx);
+    return actionIf(
+        LegalizeAction::MoreElements,
+        [=](const LegalityQuery &Query) {
+          LLT VecTy = Query.Types[TypeIdx];
+          return VecTy.isVector() && VecTy.getElementType() == EltTy &&
+                 (VecTy.getNumElements() % NumElts != 0);
+        },
+        [=](const LegalityQuery &Query) {
+          LLT VecTy = Query.Types[TypeIdx];
+          unsigned NewSize = alignTo(VecTy.getNumElements(), NumElts);
+          return std::make_pair(
+              TypeIdx, LLT::fixed_vector(NewSize, VecTy.getElementType()));
+        });
+  }
+
   /// Limit the number of elements in EltTy vectors to at most MaxElements.
   LegalizeRuleSet &clampMaxNumElements(unsigned TypeIdx, const LLT EltTy,
                                        unsigned MaxElements) {
@@ -1057,6 +1116,19 @@ public:
     const LLT EltTy = MinTy.getElementType();
     return clampMinNumElements(TypeIdx, EltTy, MinTy.getNumElements())
         .clampMaxNumElements(TypeIdx, EltTy, MaxTy.getNumElements());
+  }
+
+  /// Express \p EltTy vectors strictly using vectors with \p NumElts elements
+  /// (or scalars when \p NumElts equals 1).
+  /// First pad with undef elements to nearest larger multiple of \p NumElts.
+  /// Then perform split with all sub-instructions having the same type.
+  /// Using clampMaxNumElements (non-strict) can result in leftover instruction
+  /// with different type (fewer elements then \p NumElts or scalar).
+  /// No effect if the type is not a vector.
+  LegalizeRuleSet &clampMaxNumElementsStrict(unsigned TypeIdx, const LLT EltTy,
+                                             unsigned NumElts) {
+    return alignNumElementsTo(TypeIdx, EltTy, NumElts)
+        .clampMaxNumElements(TypeIdx, EltTy, NumElts);
   }
 
   /// Fallback on the previous implementation. This should only be used while

@@ -13,7 +13,6 @@
 #include "llvm/IR/Metadata.h"
 #include "LLVMContextImpl.h"
 #include "MetadataImpl.h"
-#include "SymbolTableListTraitsImpl.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -44,7 +43,6 @@
 #include "llvm/IR/TrackingMDRef.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
-#include "llvm/IR/ValueHandle.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -52,8 +50,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -345,7 +341,7 @@ ReplaceableMetadataImpl *ReplaceableMetadataImpl::getIfExists(Metadata &MD) {
 bool ReplaceableMetadataImpl::isReplaceable(const Metadata &MD) {
   if (auto *N = dyn_cast<MDNode>(&MD))
     return !N->isResolved();
-  return dyn_cast<ValueAsMetadata>(&MD);
+  return isa<ValueAsMetadata>(&MD);
 }
 
 static DISubprogram *getLocalFunctionMetadata(Value *V) {
@@ -672,7 +668,6 @@ MDNode *MDNode::replaceWithPermanentImpl() {
 #define HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)                                    \
   case CLASS##Kind:                                                            \
     break;
-#define HANDLE_MDNODE_LEAF_UNIQUED(CLASS) HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)
 #include "llvm/IR/Metadata.def"
   }
 
@@ -813,7 +808,6 @@ MDNode *MDNode::uniquify() {
     dispatchRecalculateHash(SubclassThis, ShouldRecalculateHash);              \
     return uniquifyImpl(SubclassThis, getContext().pImpl->CLASS##s);           \
   }
-#define HANDLE_MDNODE_LEAF_UNIQUED(CLASS) HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)
 #include "llvm/IR/Metadata.def"
   }
 }
@@ -826,7 +820,6 @@ void MDNode::eraseFromStore() {
   case CLASS##Kind:                                                            \
     getContext().pImpl->CLASS##s.erase(cast<CLASS>(this));                     \
     break;
-#define HANDLE_MDNODE_LEAF_UNIQUED(CLASS) HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)
 #include "llvm/IR/Metadata.def"
   }
 }
@@ -1368,6 +1361,15 @@ void Instruction::addAnnotationMetadata(StringRef Name) {
 
   MDNode *MD = MDTuple::get(getContext(), Names);
   setMetadata(LLVMContext::MD_annotation, MD);
+}
+
+AAMDNodes Instruction::getAAMetadata() const {
+  AAMDNodes Result;
+  Result.TBAA = getMetadata(LLVMContext::MD_tbaa);
+  Result.TBAAStruct = getMetadata(LLVMContext::MD_tbaa_struct);
+  Result.Scope = getMetadata(LLVMContext::MD_alias_scope);
+  Result.NoAlias = getMetadata(LLVMContext::MD_noalias);
+  return Result;
 }
 
 void Instruction::setAAMetadata(const AAMDNodes &N) {

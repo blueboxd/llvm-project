@@ -15,7 +15,9 @@
 #include "OutputSection.h"
 #include "OutputSegment.h"
 #include "Target.h"
+#include "Writer.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/MC/StringTableBuilder.h"
@@ -46,7 +48,7 @@ public:
     return sec->kind() == SyntheticKind;
   }
 
-  const StringRef segname;
+  StringRef segname;
   // This fake InputSection makes it easier for us to write code that applies
   // generically to both user inputs and synthetics.
   InputSection *isec;
@@ -60,6 +62,8 @@ public:
     align = target->wordSize;
   }
 
+  // Implementations of this method can assume that the regular (non-__LINKEDIT)
+  // sections already have their addresses assigned.
   virtual void finalizeContents() {}
 
   // Sections in __LINKEDIT are special: their offsets are recorded in the
@@ -113,19 +117,13 @@ public:
 class NonLazyPointerSectionBase : public SyntheticSection {
 public:
   NonLazyPointerSectionBase(const char *segname, const char *name);
-
   const llvm::SetVector<const Symbol *> &getEntries() const { return entries; }
-
   bool isNeeded() const override { return !entries.empty(); }
-
   uint64_t getSize() const override {
     return entries.size() * target->wordSize;
   }
-
   void writeTo(uint8_t *buf) const override;
-
   void addEntry(Symbol *sym);
-
   uint64_t getVA(uint32_t gotIndex) const {
     return addr + gotIndex * target->wordSize;
   }
@@ -175,12 +173,14 @@ private:
 };
 
 struct BindingEntry {
-  const DylibSymbol *dysym;
   int64_t addend;
   Location target;
-  BindingEntry(const DylibSymbol *dysym, int64_t addend, Location target)
-      : dysym(dysym), addend(addend), target(std::move(target)) {}
+  BindingEntry(int64_t addend, Location target)
+      : addend(addend), target(std::move(target)) {}
 };
+
+template <class Sym>
+using BindingsMap = llvm::DenseMap<Sym, std::vector<BindingEntry>>;
 
 // Stores bind opcodes for telling dyld which symbols to load non-lazily.
 class BindingSection final : public LinkEditSection {
@@ -188,25 +188,17 @@ public:
   BindingSection();
   void finalizeContents() override;
   uint64_t getRawSize() const override { return contents.size(); }
-  bool isNeeded() const override { return !bindings.empty(); }
+  bool isNeeded() const override { return !bindingsMap.empty(); }
   void writeTo(uint8_t *buf) const override;
 
   void addEntry(const DylibSymbol *dysym, const InputSection *isec,
                 uint64_t offset, int64_t addend = 0) {
-    bindings.emplace_back(dysym, addend, Location(isec, offset));
+    bindingsMap[dysym].emplace_back(addend, Location(isec, offset));
   }
 
 private:
-  std::vector<BindingEntry> bindings;
+  BindingsMap<const DylibSymbol *> bindingsMap;
   SmallVector<char, 128> contents;
-};
-
-struct WeakBindingEntry {
-  const Symbol *symbol;
-  int64_t addend;
-  Location target;
-  WeakBindingEntry(const Symbol *symbol, int64_t addend, Location target)
-      : symbol(symbol), addend(addend), target(std::move(target)) {}
 };
 
 // Stores bind opcodes for telling dyld which weak symbols need coalescing.
@@ -225,17 +217,17 @@ public:
   void finalizeContents() override;
   uint64_t getRawSize() const override { return contents.size(); }
   bool isNeeded() const override {
-    return !bindings.empty() || !definitions.empty();
+    return !bindingsMap.empty() || !definitions.empty();
   }
 
   void writeTo(uint8_t *buf) const override;
 
   void addEntry(const Symbol *symbol, const InputSection *isec, uint64_t offset,
                 int64_t addend = 0) {
-    bindings.emplace_back(symbol, addend, Location(isec, offset));
+    bindingsMap[symbol].emplace_back(addend, Location(isec, offset));
   }
 
-  bool hasEntry() const { return !bindings.empty(); }
+  bool hasEntry() const { return !bindingsMap.empty(); }
 
   void addNonWeakDefinition(const Defined *defined) {
     definitions.emplace_back(defined);
@@ -244,7 +236,7 @@ public:
   bool hasNonWeakDefinition() const { return !definitions.empty(); }
 
 private:
-  std::vector<WeakBindingEntry> bindings;
+  BindingsMap<const Symbol *> bindingsMap;
   std::vector<const Defined *> definitions;
   SmallVector<char, 128> contents;
 };
@@ -355,6 +347,7 @@ public:
   ExportSection();
   void finalizeContents() override;
   uint64_t getRawSize() const override { return size; }
+  bool isNeeded() const override { return size; }
   void writeTo(uint8_t *buf) const override;
 
   bool hasWeakSymbol = false;
@@ -486,6 +479,8 @@ public:
 // The code signature comes at the very end of the linked output file.
 class CodeSignatureSection final : public LinkEditSection {
 public:
+  // NOTE: These values are duplicated in llvm-objcopy's MachO/Object.h file
+  // and any changes here, should be repeated there.
   static constexpr uint8_t blockSizeShift = 12;
   static constexpr size_t blockSize = (1 << blockSizeShift); // 4 KiB
   static constexpr size_t hashSize = 256 / 8;
@@ -557,6 +552,7 @@ public:
 
   WordLiteralSection();
   void addInput(WordLiteralInputSection *);
+  void finalizeContents();
   void writeTo(uint8_t *buf) const override;
 
   uint64_t getSize() const override {
@@ -569,21 +565,23 @@ public:
            !literal8Map.empty();
   }
 
-  uint64_t getLiteral16Offset(const uint8_t *buf) const {
+  uint64_t getLiteral16Offset(uintptr_t buf) const {
     return literal16Map.at(*reinterpret_cast<const UInt128 *>(buf)) * 16;
   }
 
-  uint64_t getLiteral8Offset(const uint8_t *buf) const {
+  uint64_t getLiteral8Offset(uintptr_t buf) const {
     return literal16Map.size() * 16 +
            literal8Map.at(*reinterpret_cast<const uint64_t *>(buf)) * 8;
   }
 
-  uint64_t getLiteral4Offset(const uint8_t *buf) const {
+  uint64_t getLiteral4Offset(uintptr_t buf) const {
     return literal16Map.size() * 16 + literal8Map.size() * 8 +
            literal4Map.at(*reinterpret_cast<const uint32_t *>(buf)) * 4;
   }
 
 private:
+  std::vector<WordLiteralInputSection *> inputs;
+
   template <class T> struct Hasher {
     llvm::hash_code operator()(T v) const { return llvm::hash_value(v); }
   };

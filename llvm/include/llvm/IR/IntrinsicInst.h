@@ -390,8 +390,10 @@ public:
 class VPIntrinsic : public IntrinsicInst {
 public:
   /// \brief Declares a llvm.vp.* intrinsic in \p M that matches the parameters
-  /// \p Params.
+  /// \p Params. Additionally, the load and gather intrinsics require
+  /// \p ReturnType to be specified.
   static Function *getDeclarationForParams(Module *M, Intrinsic::ID,
+                                           Type *ReturnType,
                                            ArrayRef<Value *> Params);
 
   static Optional<unsigned> getMaskParamPos(Intrinsic::ID IntrinsicID);
@@ -403,20 +405,33 @@ public:
   // Whether \p ID is a VP intrinsic ID.
   static bool isVPIntrinsic(Intrinsic::ID);
 
-  /// \return the mask parameter or nullptr.
+  /// \return The mask parameter or nullptr.
   Value *getMaskParam() const;
   void setMaskParam(Value *);
 
-  /// \return the vector length parameter or nullptr.
+  /// \return The vector length parameter or nullptr.
   Value *getVectorLengthParam() const;
   void setVectorLengthParam(Value *);
 
-  /// \return whether the vector length param can be ignored.
+  /// \return Whether the vector length param can be ignored.
   bool canIgnoreVectorLengthParam() const;
 
-  /// \return the static element count (vector number of elements) the vector
+  /// \return The static element count (vector number of elements) the vector
   /// length parameter applies to.
   ElementCount getStaticVectorLength() const;
+
+  /// \return The alignment of the pointer used by this load/store/gather or
+  /// scatter.
+  MaybeAlign getPointerAlignment() const;
+  // MaybeAlign setPointerAlignment(Align NewAlign); // TODO
+
+  /// \return The pointer operand of this load,store, gather or scatter.
+  Value *getMemoryPointerParam() const;
+  static Optional<unsigned> getMemoryPointerParamPos(Intrinsic::ID);
+
+  /// \return The data (payload) operand of this store or scatter.
+  Value *getMemoryDataParam() const;
+  static Optional<unsigned> getMemoryDataParamPos(Intrinsic::ID);
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {
@@ -433,6 +448,28 @@ public:
 
   // Equivalent non-predicated opcode
   static Optional<unsigned> getFunctionalOpcodeForVP(Intrinsic::ID ID);
+};
+
+/// This represents vector predication reduction intrinsics.
+class VPReductionIntrinsic : public VPIntrinsic {
+public:
+  static bool isVPReduction(Intrinsic::ID ID);
+
+  unsigned getStartParamPos() const;
+  unsigned getVectorParamPos() const;
+
+  static Optional<unsigned> getStartParamPos(Intrinsic::ID ID);
+  static Optional<unsigned> getVectorParamPos(Intrinsic::ID ID);
+
+  /// Methods for support type inquiry through isa, cast, and dyn_cast:
+  /// @{
+  static bool classof(const IntrinsicInst *I) {
+    return VPReductionIntrinsic::isVPReduction(I->getIntrinsicID());
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+  /// @}
 };
 
 /// This is the common base class for constrained floating point intrinsics.
@@ -455,6 +492,9 @@ public:
 class ConstrainedFPCmpIntrinsic : public ConstrainedFPIntrinsic {
 public:
   FCmpInst::Predicate getPredicate() const;
+  bool isSignaling() const {
+    return getIntrinsicID() == Intrinsic::experimental_constrained_fcmps;
+  }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {
@@ -493,8 +533,8 @@ public:
   Value *getRHS() const { return const_cast<Value *>(getArgOperand(1)); }
 
   /// Returns the comparison predicate underlying the intrinsic.
-  ICmpInst::Predicate getPredicate() const {
-    switch (getIntrinsicID()) {
+  static ICmpInst::Predicate getPredicate(Intrinsic::ID ID) {
+    switch (ID) {
     case Intrinsic::umin:
       return ICmpInst::Predicate::ICMP_ULT;
     case Intrinsic::umax:
@@ -508,8 +548,58 @@ public:
     }
   }
 
+  /// Returns the comparison predicate underlying the intrinsic.
+  ICmpInst::Predicate getPredicate() const {
+    return getPredicate(getIntrinsicID());
+  }
+
   /// Whether the intrinsic is signed or unsigned.
-  bool isSigned() const { return ICmpInst::isSigned(getPredicate()); };
+  static bool isSigned(Intrinsic::ID ID) {
+    return ICmpInst::isSigned(getPredicate(ID));
+  };
+
+  /// Whether the intrinsic is signed or unsigned.
+  bool isSigned() const { return isSigned(getIntrinsicID()); };
+
+  /// Min/max intrinsics are monotonic, they operate on a fixed-bitwidth values,
+  /// so there is a certain threshold value, upon reaching which,
+  /// their value can no longer change. Return said threshold.
+  static APInt getSaturationPoint(Intrinsic::ID ID, unsigned numBits) {
+    switch (ID) {
+    case Intrinsic::umin:
+      return APInt::getMinValue(numBits);
+    case Intrinsic::umax:
+      return APInt::getMaxValue(numBits);
+    case Intrinsic::smin:
+      return APInt::getSignedMinValue(numBits);
+    case Intrinsic::smax:
+      return APInt::getSignedMaxValue(numBits);
+    default:
+      llvm_unreachable("Invalid intrinsic");
+    }
+  }
+
+  /// Min/max intrinsics are monotonic, they operate on a fixed-bitwidth values,
+  /// so there is a certain threshold value, upon reaching which,
+  /// their value can no longer change. Return said threshold.
+  APInt getSaturationPoint(unsigned numBits) const {
+    return getSaturationPoint(getIntrinsicID(), numBits);
+  }
+
+  /// Min/max intrinsics are monotonic, they operate on a fixed-bitwidth values,
+  /// so there is a certain threshold value, upon reaching which,
+  /// their value can no longer change. Return said threshold.
+  static Constant *getSaturationPoint(Intrinsic::ID ID, Type *Ty) {
+    return Constant::getIntegerValue(
+        Ty, getSaturationPoint(ID, Ty->getScalarSizeInBits()));
+  }
+
+  /// Min/max intrinsics are monotonic, they operate on a fixed-bitwidth values,
+  /// so there is a certain threshold value, upon reaching which,
+  /// their value can no longer change. Return said threshold.
+  Constant *getSaturationPoint(Type *Ty) const {
+    return getSaturationPoint(getIntrinsicID(), Ty);
+  }
 };
 
 /// This class represents an intrinsic that is based on a binary operation.
@@ -902,7 +992,8 @@ class MemCpyInst : public MemTransferInst {
 public:
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {
-    return I->getIntrinsicID() == Intrinsic::memcpy;
+    return I->getIntrinsicID() == Intrinsic::memcpy ||
+           I->getIntrinsicID() == Intrinsic::memcpy_inline;
   }
   static bool classof(const Value *V) {
     return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
@@ -922,10 +1013,10 @@ public:
 };
 
 /// This class wraps the llvm.memcpy.inline intrinsic.
-class MemCpyInlineInst : public MemTransferInst {
+class MemCpyInlineInst : public MemCpyInst {
 public:
   ConstantInt *getLength() const {
-    return cast<ConstantInt>(MemTransferInst::getLength());
+    return cast<ConstantInt>(MemCpyInst::getLength());
   }
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {
@@ -1088,8 +1179,37 @@ public:
   Value *getSrc() const { return const_cast<Value *>(getArgOperand(1)); }
 };
 
-/// This represents the llvm.instrprof_increment intrinsic.
-class InstrProfIncrementInst : public IntrinsicInst {
+/// A base class for all instrprof intrinsics.
+class InstrProfInstBase : public IntrinsicInst {
+public:
+  // The name of the instrumented function.
+  GlobalVariable *getName() const {
+    return cast<GlobalVariable>(
+        const_cast<Value *>(getArgOperand(0))->stripPointerCasts());
+  }
+  // The hash of the CFG for the instrumented function.
+  ConstantInt *getHash() const {
+    return cast<ConstantInt>(const_cast<Value *>(getArgOperand(1)));
+  }
+  // The number of counters for the instrumented function.
+  ConstantInt *getNumCounters() const;
+  // The index of the counter that this instruction acts on.
+  ConstantInt *getIndex() const;
+};
+
+/// This represents the llvm.instrprof.cover intrinsic.
+class InstrProfCoverInst : public InstrProfInstBase {
+public:
+  static bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::instrprof_cover;
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+};
+
+/// This represents the llvm.instrprof.increment intrinsic.
+class InstrProfIncrementInst : public InstrProfInstBase {
 public:
   static bool classof(const IntrinsicInst *I) {
     return I->getIntrinsicID() == Intrinsic::instrprof_increment;
@@ -1097,27 +1217,10 @@ public:
   static bool classof(const Value *V) {
     return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
   }
-
-  GlobalVariable *getName() const {
-    return cast<GlobalVariable>(
-        const_cast<Value *>(getArgOperand(0))->stripPointerCasts());
-  }
-
-  ConstantInt *getHash() const {
-    return cast<ConstantInt>(const_cast<Value *>(getArgOperand(1)));
-  }
-
-  ConstantInt *getNumCounters() const {
-    return cast<ConstantInt>(const_cast<Value *>(getArgOperand(2)));
-  }
-
-  ConstantInt *getIndex() const {
-    return cast<ConstantInt>(const_cast<Value *>(getArgOperand(3)));
-  }
-
   Value *getStep() const;
 };
 
+/// This represents the llvm.instrprof.increment.step intrinsic.
 class InstrProfIncrementInstStep : public InstrProfIncrementInst {
 public:
   static bool classof(const IntrinsicInst *I) {
@@ -1128,23 +1231,14 @@ public:
   }
 };
 
-/// This represents the llvm.instrprof_value_profile intrinsic.
-class InstrProfValueProfileInst : public IntrinsicInst {
+/// This represents the llvm.instrprof.value.profile intrinsic.
+class InstrProfValueProfileInst : public InstrProfInstBase {
 public:
   static bool classof(const IntrinsicInst *I) {
     return I->getIntrinsicID() == Intrinsic::instrprof_value_profile;
   }
   static bool classof(const Value *V) {
     return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
-  }
-
-  GlobalVariable *getName() const {
-    return cast<GlobalVariable>(
-        const_cast<Value *>(getArgOperand(0))->stripPointerCasts());
-  }
-
-  ConstantInt *getHash() const {
-    return cast<ConstantInt>(const_cast<Value *>(getArgOperand(1)));
   }
 
   Value *getTargetValue() const {

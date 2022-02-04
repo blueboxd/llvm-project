@@ -8,6 +8,7 @@
 
 #include "CommandObjectThread.h"
 
+#include <memory>
 #include <sstream>
 
 #include "CommandObjectThreadUtil.h"
@@ -32,6 +33,7 @@
 #include "lldb/Target/ThreadPlan.h"
 #include "lldb/Target/ThreadPlanStepInRange.h"
 #include "lldb/Target/Trace.h"
+#include "lldb/Target/TraceInstructionDumper.h"
 #include "lldb/Utility/State.h"
 
 using namespace lldb;
@@ -45,7 +47,7 @@ class CommandObjectThreadBacktrace : public CommandObjectIterateOverThreads {
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() {
+    CommandOptions() {
       // Keep default values of all options in one place: OptionParsingStarting
       // ()
       OptionParsingStarting(nullptr);
@@ -117,8 +119,7 @@ public:
             nullptr,
             eCommandRequiresProcess | eCommandRequiresThread |
                 eCommandTryTargetAPILock | eCommandProcessMustBeLaunched |
-                eCommandProcessMustBePaused),
-        m_options() {}
+                eCommandProcessMustBePaused) {}
 
   ~CommandObjectThreadBacktrace() override = default;
 
@@ -201,7 +202,7 @@ static constexpr OptionEnumValues TriRunningModes() {
 
 class ThreadStepScopeOptionGroup : public OptionGroup {
 public:
-  ThreadStepScopeOptionGroup() : OptionGroup() {
+  ThreadStepScopeOptionGroup() {
     // Keep default values of all options in one place: OptionParsingStarting
     // ()
     OptionParsingStarting(nullptr);
@@ -290,16 +291,10 @@ public:
     // Check if we are in Non-Stop mode
     TargetSP target_sp =
         execution_context ? execution_context->GetTargetSP() : TargetSP();
-    if (target_sp && target_sp->GetNonStopModeEnabled()) {
-      // NonStopMode runs all threads by definition, so when it is on we don't
-      // need to check the process setting for runs all threads.
-      m_run_mode = eOnlyThisThread;
-    } else {
-      ProcessSP process_sp =
-          execution_context ? execution_context->GetProcessSP() : ProcessSP();
-      if (process_sp && process_sp->GetSteppingRunsAllThreads())
-        m_run_mode = eAllThreads;
-    }
+    ProcessSP process_sp =
+        execution_context ? execution_context->GetProcessSP() : ProcessSP();
+    if (process_sp && process_sp->GetSteppingRunsAllThreads())
+      m_run_mode = eAllThreads;
 
     m_avoid_regexp.clear();
     m_step_in_target.clear();
@@ -331,7 +326,7 @@ public:
                                 eCommandTryTargetAPILock |
                                 eCommandProcessMustBeLaunched |
                                 eCommandProcessMustBePaused),
-        m_step_type(step_type), m_step_scope(step_scope), m_options(),
+        m_step_type(step_type), m_step_scope(step_scope),
         m_class_options("scripted step") {
     CommandArgumentEntry arg;
     CommandArgumentData thread_id_arg;
@@ -530,12 +525,12 @@ protected:
       return false;
     }
 
-    // If we got a new plan, then set it to be a master plan (User level Plans
-    // should be master plans so that they can be interruptible).  Then resume
-    // the process.
+    // If we got a new plan, then set it to be a controlling plan (User level
+    // Plans should be controlling plans so that they can be interruptible).
+    // Then resume the process.
 
     if (new_plan_sp) {
-      new_plan_sp->SetIsMasterPlan(true);
+      new_plan_sp->SetIsControllingPlan(true);
       new_plan_sp->SetOkayToDiscard(false);
 
       if (m_options.m_step_count > 1) {
@@ -784,7 +779,7 @@ public:
     uint32_t m_thread_idx = LLDB_INVALID_THREAD_ID;
     uint32_t m_frame_idx = LLDB_INVALID_FRAME_ID;
 
-    CommandOptions() : Options() {
+    CommandOptions() {
       // Keep default values of all options in one place: OptionParsingStarting
       // ()
       OptionParsingStarting(nullptr);
@@ -865,8 +860,7 @@ public:
             " is provided, stepping will stop when the first one is hit.",
             nullptr,
             eCommandRequiresThread | eCommandTryTargetAPILock |
-                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused),
-        m_options() {
+                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused) {
     CommandArgumentEntry arg;
     CommandArgumentData line_num_arg;
 
@@ -1025,11 +1019,12 @@ protected:
             abort_other_plans, &address_list.front(), address_list.size(),
             m_options.m_stop_others, m_options.m_frame_idx, new_plan_status);
         if (new_plan_sp) {
-          // User level plans should be master plans so they can be interrupted
+          // User level plans should be controlling plans so they can be
+          // interrupted
           // (e.g. by hitting a breakpoint) and other plans executed by the
           // user (stepping around the breakpoint) and then a "continue" will
           // resume the original plan.
-          new_plan_sp->SetIsMasterPlan(true);
+          new_plan_sp->SetIsControllingPlan(true);
           new_plan_sp->SetOkayToDiscard(false);
         } else {
           result.SetError(new_plan_status);
@@ -1189,7 +1184,7 @@ class CommandObjectThreadInfo : public CommandObjectIterateOverThreads {
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() { OptionParsingStarting(nullptr); }
+    CommandOptions() { OptionParsingStarting(nullptr); }
 
     ~CommandOptions() override = default;
 
@@ -1234,8 +1229,7 @@ public:
             "current thread.",
             "thread info",
             eCommandRequiresProcess | eCommandTryTargetAPILock |
-                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused),
-        m_options() {
+                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused) {
     m_add_return = false;
   }
 
@@ -1326,6 +1320,53 @@ public:
   }
 };
 
+class CommandObjectThreadSiginfo : public CommandObjectIterateOverThreads {
+public:
+  CommandObjectThreadSiginfo(CommandInterpreter &interpreter)
+      : CommandObjectIterateOverThreads(
+            interpreter, "thread siginfo",
+            "Display the current siginfo object for a thread. Defaults to "
+            "the current thread.",
+            "thread siginfo",
+            eCommandRequiresProcess | eCommandTryTargetAPILock |
+                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused) {}
+
+  ~CommandObjectThreadSiginfo() override = default;
+
+  void
+  HandleArgumentCompletion(CompletionRequest &request,
+                           OptionElementVector &opt_element_vector) override {
+    CommandCompletions::InvokeCommonCompletionCallbacks(
+        GetCommandInterpreter(), CommandCompletions::eThreadIndexCompletion,
+        request, nullptr);
+  }
+
+  bool HandleOneThread(lldb::tid_t tid, CommandReturnObject &result) override {
+    ThreadSP thread_sp =
+        m_exe_ctx.GetProcessPtr()->GetThreadList().FindThreadByID(tid);
+    if (!thread_sp) {
+      result.AppendErrorWithFormat("thread no longer exists: 0x%" PRIx64 "\n",
+                                   tid);
+      return false;
+    }
+
+    Stream &strm = result.GetOutputStream();
+    if (!thread_sp->GetDescription(strm, eDescriptionLevelFull, false, false)) {
+      result.AppendErrorWithFormat("error displaying info for thread: \"%d\"\n",
+                                   thread_sp->GetIndexID());
+      return false;
+    }
+    ValueObjectSP exception_object_sp = thread_sp->GetSiginfoValue();
+    if (exception_object_sp)
+      exception_object_sp->Dump(strm);
+    else
+      strm.Printf("(no siginfo)\n");
+    strm.PutChar('\n');
+
+    return true;
+  }
+};
+
 // CommandObjectThreadReturn
 #define LLDB_OPTIONS_thread_return
 #include "CommandOptions.inc"
@@ -1334,7 +1375,7 @@ class CommandObjectThreadReturn : public CommandObjectRaw {
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() {
+    CommandOptions() {
       // Keep default values of all options in one place: OptionParsingStarting
       // ()
       OptionParsingStarting(nullptr);
@@ -1389,8 +1430,7 @@ public:
                          "thread return",
                          eCommandRequiresFrame | eCommandTryTargetAPILock |
                              eCommandProcessMustBeLaunched |
-                             eCommandProcessMustBePaused),
-        m_options() {
+                             eCommandProcessMustBePaused) {
     CommandArgumentEntry arg;
     CommandArgumentData expression_arg;
 
@@ -1499,7 +1539,7 @@ class CommandObjectThreadJump : public CommandObjectParsed {
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() { OptionParsingStarting(nullptr); }
+    CommandOptions() { OptionParsingStarting(nullptr); }
 
     ~CommandOptions() override = default;
 
@@ -1559,8 +1599,7 @@ public:
             interpreter, "thread jump",
             "Sets the program counter to a new address.", "thread jump",
             eCommandRequiresFrame | eCommandTryTargetAPILock |
-                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused),
-        m_options() {}
+                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused) {}
 
   ~CommandObjectThreadJump() override = default;
 
@@ -1636,7 +1675,7 @@ class CommandObjectThreadPlanList : public CommandObjectIterateOverThreads {
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() {
+    CommandOptions() {
       // Keep default values of all options in one place: OptionParsingStarting
       // ()
       OptionParsingStarting(nullptr);
@@ -1698,8 +1737,7 @@ public:
             nullptr,
             eCommandRequiresProcess | eCommandRequiresThread |
                 eCommandTryTargetAPILock | eCommandProcessMustBeLaunched |
-                eCommandProcessMustBePaused),
-        m_options() {}
+                eCommandProcessMustBePaused) {}
 
   ~CommandObjectThreadPlanList() override = default;
 
@@ -1922,13 +1960,37 @@ public:
 
 // Next are the subcommands of CommandObjectMultiwordTrace
 
+// CommandObjectTraceExport
+
+class CommandObjectTraceExport : public CommandObjectMultiword {
+public:
+  CommandObjectTraceExport(CommandInterpreter &interpreter)
+      : CommandObjectMultiword(
+            interpreter, "trace thread export",
+            "Commands for exporting traces of the threads in the current "
+            "process to different formats.",
+            "thread trace export <export-plugin> [<subcommand objects>]") {
+
+    unsigned i = 0;
+    for (llvm::StringRef plugin_name =
+             PluginManager::GetTraceExporterPluginNameAtIndex(i++);
+         !plugin_name.empty();
+         plugin_name = PluginManager::GetTraceExporterPluginNameAtIndex(i++)) {
+      if (ThreadTraceExportCommandCreator command_creator =
+              PluginManager::GetThreadTraceExportCommandCreatorAtIndex(i)) {
+        LoadSubCommand(plugin_name, command_creator(interpreter));
+      }
+    }
+  }
+};
+
 // CommandObjectTraceStart
 
 class CommandObjectTraceStart : public CommandObjectTraceProxy {
 public:
   CommandObjectTraceStart(CommandInterpreter &interpreter)
       : CommandObjectTraceProxy(
-            /*live_debug_session_only*/ true, interpreter, "thread trace start",
+            /*live_debug_session_only=*/true, interpreter, "thread trace start",
             "Start tracing threads with the corresponding trace "
             "plug-in for the current process.",
             "thread trace start [<trace-options>]") {}
@@ -1983,7 +2045,7 @@ class CommandObjectTraceDumpInstructions
 public:
   class CommandOptions : public Options {
   public:
-    CommandOptions() : Options() { OptionParsingStarting(nullptr); }
+    CommandOptions() { OptionParsingStarting(nullptr); }
 
     ~CommandOptions() override = default;
 
@@ -2004,19 +2066,26 @@ public:
           m_count = count;
         break;
       }
-      case 'p': {
-        int32_t position;
-        if (option_arg.empty() || option_arg.getAsInteger(0, position) ||
-            position < 0)
+      case 's': {
+        int32_t skip;
+        if (option_arg.empty() || option_arg.getAsInteger(0, skip) || skip < 0)
           error.SetErrorStringWithFormat(
               "invalid integer value for option '%s'",
               option_arg.str().c_str());
         else
-          m_position = position;
+          m_skip = skip;
         break;
       }
       case 'r': {
         m_raw = true;
+        break;
+      }
+      case 'f': {
+        m_forwards = true;
+        break;
+      }
+      case 't': {
+        m_show_tsc = true;
         break;
       }
       default:
@@ -2027,8 +2096,10 @@ public:
 
     void OptionParsingStarting(ExecutionContext *execution_context) override {
       m_count = kDefaultCount;
-      m_position = llvm::None;
+      m_skip = 0;
       m_raw = false;
+      m_forwards = false;
+      m_show_tsc = false;
     }
 
     llvm::ArrayRef<OptionDefinition> GetDefinitions() override {
@@ -2039,21 +2110,23 @@ public:
 
     // Instance variables to hold the values for command options.
     size_t m_count;
-    llvm::Optional<ssize_t> m_position;
+    size_t m_skip;
     bool m_raw;
+    bool m_forwards;
+    bool m_show_tsc;
   };
 
   CommandObjectTraceDumpInstructions(CommandInterpreter &interpreter)
       : CommandObjectIterateOverThreads(
             interpreter, "thread trace dump instructions",
-            "Dump the traced instructions for one or more threads.  If no "
+            "Dump the traced instructions for one or more threads. If no "
             "threads are specified, show the current thread.  Use the "
             "thread-index \"all\" to see all threads.",
             nullptr,
             eCommandRequiresProcess | eCommandTryTargetAPILock |
                 eCommandProcessMustBeLaunched | eCommandProcessMustBePaused |
                 eCommandProcessMustBeTraced),
-        m_options(), m_create_repeat_command_just_invoked(false) {}
+        m_create_repeat_command_just_invoked(false) {}
 
   ~CommandObjectTraceDumpInstructions() override = default;
 
@@ -2063,14 +2136,14 @@ public:
                                uint32_t index) override {
     current_command_args.GetCommandString(m_repeat_command);
     m_create_repeat_command_just_invoked = true;
-    m_consecutive_repetitions = 0;
     return m_repeat_command.c_str();
   }
 
 protected:
   bool DoExecute(Args &args, CommandReturnObject &result) override {
-    if (IsRepeatCommand())
-      m_consecutive_repetitions++;
+    if (!IsRepeatCommand())
+      m_dumpers.clear();
+
     bool status = CommandObjectIterateOverThreads::DoExecute(args, result);
 
     m_create_repeat_command_just_invoked = false;
@@ -2082,24 +2155,38 @@ protected:
   }
 
   bool HandleOneThread(lldb::tid_t tid, CommandReturnObject &result) override {
+    Stream &s = result.GetOutputStream();
+
     const TraceSP &trace_sp = m_exe_ctx.GetTargetSP()->GetTrace();
     ThreadSP thread_sp =
         m_exe_ctx.GetProcessPtr()->GetThreadList().FindThreadByID(tid);
 
-    if (llvm::Optional<size_t> insn_count =
-            trace_sp->GetInstructionCount(*thread_sp)) {
-      size_t count = m_options.m_count;
-      ssize_t position =
-          m_options.m_position.getValueOr((ssize_t)*insn_count - 1) -
-          m_consecutive_repetitions * count;
-      if (position < 0)
-        result.AppendError("error: no more data");
-      else
-        trace_sp->DumpTraceInstructions(*thread_sp, result.GetOutputStream(),
-                                        count, position, m_options.m_raw);
-    } else {
-      result.AppendError("error: not traced");
+    if (!m_dumpers.count(thread_sp->GetID())) {
+      lldb::TraceCursorUP cursor_up = trace_sp->GetCursor(*thread_sp);
+      // Set up the cursor and return the presentation index of the first
+      // instruction to dump after skipping instructions.
+      auto setUpCursor = [&]() {
+        cursor_up->SetForwards(m_options.m_forwards);
+        if (m_options.m_forwards)
+          return cursor_up->Seek(m_options.m_skip, TraceCursor::SeekType::Set);
+        return -cursor_up->Seek(-m_options.m_skip, TraceCursor::SeekType::End);
+      };
+
+      int initial_index = setUpCursor();
+
+      auto dumper = std::make_unique<TraceInstructionDumper>(
+          std::move(cursor_up), initial_index, m_options.m_raw,
+          m_options.m_show_tsc);
+
+      // This happens when the seek value was more than the number of available
+      // instructions.
+      if (std::abs(initial_index) < (int)m_options.m_skip)
+        dumper->SetNoMoreData();
+
+      m_dumpers[thread_sp->GetID()] = std::move(dumper);
     }
+
+    m_dumpers[thread_sp->GetID()]->DumpInstructions(s, m_options.m_count);
     return true;
   }
 
@@ -2108,7 +2195,82 @@ protected:
   // Repeat command helpers
   std::string m_repeat_command;
   bool m_create_repeat_command_just_invoked;
-  size_t m_consecutive_repetitions = 0;
+  std::map<lldb::tid_t, std::unique_ptr<TraceInstructionDumper>> m_dumpers;
+};
+
+// CommandObjectTraceDumpInfo
+#define LLDB_OPTIONS_thread_trace_dump_info
+#include "CommandOptions.inc"
+
+class CommandObjectTraceDumpInfo : public CommandObjectIterateOverThreads {
+public:
+  class CommandOptions : public Options {
+  public:
+    CommandOptions() { OptionParsingStarting(nullptr); }
+
+    ~CommandOptions() override = default;
+
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
+      const int short_option = m_getopt_table[option_idx].val;
+
+      switch (short_option) {
+      case 'v': {
+        m_verbose = true;
+        break;
+      }
+      default:
+        llvm_unreachable("Unimplemented option");
+      }
+      return error;
+    }
+
+    void OptionParsingStarting(ExecutionContext *execution_context) override {
+      m_verbose = false;
+    }
+
+    llvm::ArrayRef<OptionDefinition> GetDefinitions() override {
+      return llvm::makeArrayRef(g_thread_trace_dump_info_options);
+    }
+
+    // Instance variables to hold the values for command options.
+    bool m_verbose;
+  };
+
+  bool DoExecute(Args &command, CommandReturnObject &result) override {
+    Target &target = m_exe_ctx.GetTargetRef();
+    result.GetOutputStream().Format("Trace technology: {0}\n",
+                                    target.GetTrace()->GetPluginName());
+    return CommandObjectIterateOverThreads::DoExecute(command, result);
+  }
+
+  CommandObjectTraceDumpInfo(CommandInterpreter &interpreter)
+      : CommandObjectIterateOverThreads(
+            interpreter, "thread trace dump info",
+            "Dump the traced information for one or more threads.  If no "
+            "threads are specified, show the current thread.  Use the "
+            "thread-index \"all\" to see all threads.",
+            nullptr,
+            eCommandRequiresProcess | eCommandTryTargetAPILock |
+                eCommandProcessMustBeLaunched | eCommandProcessMustBePaused |
+                eCommandProcessMustBeTraced) {}
+
+  ~CommandObjectTraceDumpInfo() override = default;
+
+  Options *GetOptions() override { return &m_options; }
+
+protected:
+  bool HandleOneThread(lldb::tid_t tid, CommandReturnObject &result) override {
+    const TraceSP &trace_sp = m_exe_ctx.GetTargetSP()->GetTrace();
+    ThreadSP thread_sp =
+        m_exe_ctx.GetProcessPtr()->GetThreadList().FindThreadByID(tid);
+    trace_sp->DumpTraceInfo(*thread_sp, result.GetOutputStream(),
+                            m_options.m_verbose);
+    return true;
+  }
+
+  CommandOptions m_options;
 };
 
 // CommandObjectMultiwordTraceDump
@@ -2123,6 +2285,8 @@ public:
     LoadSubCommand(
         "instructions",
         CommandObjectSP(new CommandObjectTraceDumpInstructions(interpreter)));
+    LoadSubCommand(
+        "info", CommandObjectSP(new CommandObjectTraceDumpInfo(interpreter)));
   }
   ~CommandObjectMultiwordTraceDump() override = default;
 };
@@ -2142,6 +2306,8 @@ public:
                    CommandObjectSP(new CommandObjectTraceStart(interpreter)));
     LoadSubCommand("stop",
                    CommandObjectSP(new CommandObjectTraceStop(interpreter)));
+    LoadSubCommand("export",
+                   CommandObjectSP(new CommandObjectTraceExport(interpreter)));
   }
 
   ~CommandObjectMultiwordTrace() override = default;
@@ -2174,6 +2340,8 @@ CommandObjectMultiwordThread::CommandObjectMultiwordThread(
                  CommandObjectSP(new CommandObjectThreadInfo(interpreter)));
   LoadSubCommand("exception", CommandObjectSP(new CommandObjectThreadException(
                                   interpreter)));
+  LoadSubCommand("siginfo",
+                 CommandObjectSP(new CommandObjectThreadSiginfo(interpreter)));
   LoadSubCommand("step-in",
                  CommandObjectSP(new CommandObjectThreadStepWithTypeAndScope(
                      interpreter, "thread step-in",

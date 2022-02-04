@@ -11,18 +11,14 @@
 #define _LIBCPP___ITERATOR_ISTREAM_ITERATOR_H
 
 #include <__config>
-#include <__iterator/iterator_traits.h>
 #include <__iterator/iterator.h>
+#include <__iterator/iterator_traits.h>
 #include <__memory/addressof.h>
-#include <cstddef>
 #include <iosfwd> // for forward declarations of char_traits and basic_istream
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
 #endif
-
-_LIBCPP_PUSH_MACROS
-#include <__undef_macros>
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
@@ -71,12 +67,6 @@ public:
     bool
     operator==(const istream_iterator<_Up, _CharU, _TraitsU, _DistanceU>& __x,
                const istream_iterator<_Up, _CharU, _TraitsU, _DistanceU>& __y);
-
-    template <class _Up, class _CharU, class _TraitsU, class _DistanceU>
-    friend _LIBCPP_INLINE_VISIBILITY
-    bool
-    operator==(const istream_iterator<_Up, _CharU, _TraitsU, _DistanceU>& __x,
-               const istream_iterator<_Up, _CharU, _TraitsU, _DistanceU>& __y);
 };
 
 template <class _Tp, class _CharT, class _Traits, class _Distance>
@@ -98,7 +88,5 @@ operator!=(const istream_iterator<_Tp, _CharT, _Traits, _Distance>& __x,
 }
 
 _LIBCPP_END_NAMESPACE_STD
-
-_LIBCPP_POP_MACROS
 
 #endif // _LIBCPP___ITERATOR_ISTREAM_ITERATOR_H

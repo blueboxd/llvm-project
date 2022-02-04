@@ -177,7 +177,8 @@ static void convertToParamAS(Value *OldUser, Value *Param) {
     }
     if (auto *GEP = dyn_cast<GetElementPtrInst>(I.OldInstruction)) {
       SmallVector<Value *, 4> Indices(GEP->indices());
-      auto *NewGEP = GetElementPtrInst::Create(nullptr, I.NewParam, Indices,
+      auto *NewGEP = GetElementPtrInst::Create(GEP->getSourceElementType(),
+                                               I.NewParam, Indices,
                                                GEP->getName(), GEP);
       NewGEP->setIsInBounds(GEP->isInBounds());
       return NewGEP;
@@ -232,7 +233,7 @@ void NVPTXLowerArgs::handleByValParam(Argument *Arg) {
 
   assert(PType && "Expecting pointer type in handleByValParam");
 
-  Type *StructType = PType->getElementType();
+  Type *StructType = PType->getPointerElementType();
 
   auto IsALoadChain = [&](Value *Start) {
     SmallVector<Value *, 16> ValuesToCheck = {Start};

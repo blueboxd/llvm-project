@@ -5,7 +5,7 @@ add_entrypoint_object(
   HDRS
     ../ceil.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -17,7 +17,7 @@ add_entrypoint_object(
   HDRS
     ../ceilf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -29,7 +29,7 @@ add_entrypoint_object(
   HDRS
     ../ceill.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -66,6 +66,8 @@ add_entrypoint_object(
     .sincosf_utils
     libc.include.math
     libc.src.errno.__errno_location
+  COMPILE_OPTIONS
+    -O3
 )
 
 add_entrypoint_object(
@@ -78,7 +80,7 @@ add_entrypoint_object(
     .sincosf_utils
     libc.include.math
     libc.src.errno.__errno_location
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O3
 )
@@ -93,6 +95,8 @@ add_entrypoint_object(
     .sincosf_utils
     libc.include.math
     libc.src.errno.__errno_location
+  COMPILE_OPTIONS
+    -O3
 )
 
 add_entrypoint_object(
@@ -102,7 +106,7 @@ add_entrypoint_object(
   HDRS
     ../fabs.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -114,7 +118,7 @@ add_entrypoint_object(
   HDRS
     ../fabsf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -126,7 +130,7 @@ add_entrypoint_object(
   HDRS
     ../fabsl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -138,7 +142,7 @@ add_entrypoint_object(
   HDRS
     ../trunc.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -150,7 +154,7 @@ add_entrypoint_object(
   HDRS
     ../truncf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -162,7 +166,7 @@ add_entrypoint_object(
   HDRS
     ../truncl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -174,7 +178,7 @@ add_entrypoint_object(
   HDRS
     ../floor.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -186,7 +190,7 @@ add_entrypoint_object(
   HDRS
     ../floorf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -198,7 +202,7 @@ add_entrypoint_object(
   HDRS
     ../floorl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -210,7 +214,7 @@ add_entrypoint_object(
   HDRS
     ../round.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -222,7 +226,7 @@ add_entrypoint_object(
   HDRS
     ../roundf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -234,7 +238,7 @@ add_entrypoint_object(
   HDRS
     ../roundl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -246,7 +250,7 @@ add_entrypoint_object(
   HDRS
     ../lround.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -258,7 +262,7 @@ add_entrypoint_object(
   HDRS
     ../lroundf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -270,7 +274,7 @@ add_entrypoint_object(
   HDRS
     ../lroundl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -282,7 +286,7 @@ add_entrypoint_object(
   HDRS
     ../llround.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -294,7 +298,7 @@ add_entrypoint_object(
   HDRS
     ../llroundf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -306,7 +310,7 @@ add_entrypoint_object(
   HDRS
     ../llroundl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -318,7 +322,7 @@ add_entrypoint_object(
   HDRS
     ../rint.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -330,7 +334,7 @@ add_entrypoint_object(
   HDRS
     ../rintf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -342,7 +346,7 @@ add_entrypoint_object(
   HDRS
     ../rintl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -354,7 +358,7 @@ add_entrypoint_object(
   HDRS
     ../lrint.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -366,7 +370,7 @@ add_entrypoint_object(
   HDRS
     ../lrintf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -378,7 +382,7 @@ add_entrypoint_object(
   HDRS
     ../lrintl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -390,7 +394,7 @@ add_entrypoint_object(
   HDRS
     ../llrint.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -402,7 +406,7 @@ add_entrypoint_object(
   HDRS
     ../llrintf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -414,7 +418,7 @@ add_entrypoint_object(
   HDRS
     ../llrintl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -426,7 +430,7 @@ add_entrypoint_object(
   HDRS
     ../nearbyint.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -438,7 +442,7 @@ add_entrypoint_object(
   HDRS
     ../nearbyintf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -450,7 +454,7 @@ add_entrypoint_object(
   HDRS
     ../nearbyintl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -508,7 +512,7 @@ add_entrypoint_object(
   HDRS
     ../copysign.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -520,7 +524,7 @@ add_entrypoint_object(
   HDRS
     ../copysignf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -532,7 +536,7 @@ add_entrypoint_object(
   HDRS
     ../copysignl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -544,7 +548,7 @@ add_entrypoint_object(
   HDRS
     ../frexp.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -556,7 +560,7 @@ add_entrypoint_object(
   HDRS
     ../frexpf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -568,7 +572,7 @@ add_entrypoint_object(
   HDRS
     ../frexpl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -580,7 +584,7 @@ add_entrypoint_object(
   HDRS
     ../ilogb.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -592,7 +596,7 @@ add_entrypoint_object(
   HDRS
     ../ilogbf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -604,7 +608,7 @@ add_entrypoint_object(
   HDRS
     ../ilogbl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -616,7 +620,7 @@ add_entrypoint_object(
   HDRS
     ../ldexp.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -628,7 +632,7 @@ add_entrypoint_object(
   HDRS
     ../ldexpf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -640,9 +644,56 @@ add_entrypoint_object(
   HDRS
     ../ldexpl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
+)
+
+add_object_library(
+  common_constants
+  HDRS
+    common_constants.h
+  SRCS
+    common_constants.cpp
+)
+
+add_entrypoint_object(
+  log10f
+  SRCS
+    log10f.cpp
+  HDRS
+    ../log10f.h
+  DEPENDS
+    .common_constants
+    libc.src.__support.FPUtil.fputil
+  COMPILE_OPTIONS
+    -O3
+)
+
+add_entrypoint_object(
+  log2f
+  SRCS
+    log2f.cpp
+  HDRS
+    ../log2f.h
+  DEPENDS
+    .common_constants
+    libc.src.__support.FPUtil.fputil
+    COMPILE_OPTIONS
+    -O3
+)
+
+add_entrypoint_object(
+  logf
+  SRCS
+    logf.cpp
+  HDRS
+    ../logf.h
+  DEPENDS
+    .common_constants
+    libc.src.__support.FPUtil.fputil
+  COMPILE_OPTIONS
+    -O3
 )
 
 add_entrypoint_object(
@@ -652,7 +703,7 @@ add_entrypoint_object(
   HDRS
     ../logb.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -664,7 +715,7 @@ add_entrypoint_object(
   HDRS
     ../logbf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -676,7 +727,7 @@ add_entrypoint_object(
   HDRS
     ../logbl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -688,7 +739,7 @@ add_entrypoint_object(
   HDRS
     ../modf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -700,7 +751,7 @@ add_entrypoint_object(
   HDRS
     ../modff.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -712,7 +763,7 @@ add_entrypoint_object(
   HDRS
     ../modfl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -724,7 +775,7 @@ add_entrypoint_object(
   HDRS
     ../fmin.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -736,7 +787,7 @@ add_entrypoint_object(
   HDRS
     ../fminf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -748,7 +799,7 @@ add_entrypoint_object(
   HDRS
     ../fminl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -760,7 +811,7 @@ add_entrypoint_object(
   HDRS
     ../fmax.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -772,7 +823,7 @@ add_entrypoint_object(
   HDRS
     ../fmaxf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -784,7 +835,7 @@ add_entrypoint_object(
   HDRS
     ../fmaxl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -796,9 +847,10 @@ add_entrypoint_object(
   HDRS
     ../sqrt.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
+    libc.src.__support.FPUtil.sqrt
   COMPILE_OPTIONS
-    -O2
+    -O3
 )
 
 add_entrypoint_object(
@@ -808,9 +860,10 @@ add_entrypoint_object(
   HDRS
     ../sqrtf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
+    libc.src.__support.FPUtil.sqrt
   COMPILE_OPTIONS
-    -O2
+    -O3
 )
 
 add_entrypoint_object(
@@ -820,9 +873,10 @@ add_entrypoint_object(
   HDRS
     ../sqrtl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
+    libc.src.__support.FPUtil.sqrt
   COMPILE_OPTIONS
-    -O2
+    -O3
 )
 
 add_entrypoint_object(
@@ -832,7 +886,7 @@ add_entrypoint_object(
   HDRS
     ../remquof.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -844,7 +898,7 @@ add_entrypoint_object(
   HDRS
     ../remquo.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -856,7 +910,7 @@ add_entrypoint_object(
   HDRS
     ../remquol.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -868,7 +922,7 @@ add_entrypoint_object(
   HDRS
     ../remainderf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -880,7 +934,7 @@ add_entrypoint_object(
   HDRS
     ../remainder.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -892,7 +946,7 @@ add_entrypoint_object(
   HDRS
     ../remainderl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -904,9 +958,9 @@ add_entrypoint_object(
   HDRS
     ../hypotf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
-    -O2
+    -O3
 )
 
 add_entrypoint_object(
@@ -916,7 +970,7 @@ add_entrypoint_object(
   HDRS
     ../fdim.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -928,7 +982,7 @@ add_entrypoint_object(
   HDRS
     ../fdimf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -940,7 +994,7 @@ add_entrypoint_object(
   HDRS
     ../fdiml.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -952,9 +1006,9 @@ add_entrypoint_object(
   HDRS
     ../hypot.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
-    -O2
+    -O3
 )
 
 add_entrypoint_object(
@@ -964,7 +1018,7 @@ add_entrypoint_object(
   HDRS
     ../nextafter.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -976,7 +1030,7 @@ add_entrypoint_object(
   HDRS
     ../nextafterf.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
 )
@@ -988,7 +1042,19 @@ add_entrypoint_object(
   HDRS
     ../nextafterl.h
   DEPENDS
-    libc.utils.FPUtil.fputil
+    libc.src.__support.FPUtil.fputil
   COMPILE_OPTIONS
     -O2
+)
+
+add_object_library(
+  dp_trig
+  SRCS
+    dp_trig.cpp
+  HDRS
+    dp_trig.h
+  DEPENDS
+    libc.src.__support.FPUtil.fputil
+  COMPILE_OPTIONS
+   -O3
 )

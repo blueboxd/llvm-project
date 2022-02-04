@@ -21,8 +21,8 @@
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "gtest/gtest.h"
@@ -221,7 +221,7 @@ body:             |
     liveins: $x0
 
   %0:gpr64common = COPY $x0
-  %1:gpr32 = LDRWui %0, 0 :: (load 4 from %ir.p)
+  %1:gpr32 = LDRWui %0, 0 :: (load (s32) from %ir.p)
 ...
 )MIR";
 
@@ -255,7 +255,7 @@ body:             |
   MachineModuleSlotTracker MST(MF);
   // Print that MI with new machine metadata, which slot numbers should be
   // assigned.
-  EXPECT_EQ("%1:gpr32 = LDRWui %0, 0 :: (load 4 from %ir.p, "
+  EXPECT_EQ("%1:gpr32 = LDRWui %0, 0 :: (load (s32) from %ir.p, "
             "!alias.scope !0, !noalias !3)",
             print([&](raw_ostream &OS) {
               MI.print(OS, MST, /*IsStandalone=*/false, /*SkipOpers=*/false,
@@ -285,9 +285,67 @@ CHECK-DAG: ![[MMSCOPE1:[0-9]+]] = distinct !{!{{[0-9]+}}, ![[MMDOMAIN]], !"scope
 CHECK-DAG: ![[MMSET0:[0-9]+]] = !{![[MMSCOPE0]]}
 CHECK-DAG: ![[MMSET1:[0-9]+]] = !{![[MMSCOPE1]]}
 CHECK: body:
-CHECK: %1:gpr32 = LDRWui %0, 0 :: (load 4 from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
+CHECK: %1:gpr32 = LDRWui %0, 0 :: (load (s32) from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
 )";
   EXPECT_TRUE(checkOutput(CheckString, Output));
+}
+
+TEST_F(MachineMetadataTest, isMetaInstruction) {
+  auto TM = createTargetMachine(Triple::normalize("x86_64--"), "", "");
+  if (!TM)
+    GTEST_SKIP();
+
+  StringRef MIRString = R"MIR(
+--- |
+  define void @test0(i32 %b) {
+    ret void
+  }
+  !0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, splitDebugInlining: false, nameTableKind: None)
+  !1 = !DIFile(filename: "a.c", directory: "/tmp")
+  !2 = !{i32 7, !"Dwarf Version", i32 4}
+  !3 = !{i32 2, !"Debug Info Version", i32 3}
+  !4 = !{i32 1, !"wchar_size", i32 4}
+  !5 = !{i32 7, !"uwtable", i32 1}
+  !6 = !{i32 7, !"frame-pointer", i32 2}
+  !7 = !{!""}
+  !8 = distinct !DISubprogram(name: "test0", scope: !1, file: !1, line: 1, type: !9, scopeLine: 1, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !12)
+  !9 = !DISubroutineType(types: !10)
+  !10 = !{null, !11}
+  !11 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+  !12 = !{}
+  !13 = !DILocalVariable(name: "b", arg: 1, scope: !8, file: !1, line: 1, type: !11)
+  !14 = !DILocation(line: 1, column: 16, scope: !8)
+...
+---
+name:            test0
+machineFunctionInfo
+body:             |
+  bb.0:
+  $rdi = IMPLICIT_DEF
+  KILL $rsi
+  CFI_INSTRUCTION undefined $rax
+  EH_LABEL 0
+  GC_LABEL 0
+  DBG_VALUE $rax, $noreg, !13, !DIExpression(), debug-location !14
+  DBG_LABEL 0
+  LIFETIME_START 0
+  LIFETIME_END 0
+  PSEUDO_PROBE 6699318081062747564, 1, 0, 0
+  $xmm0 = ARITH_FENCE $xmm0
+...
+)MIR";
+
+  MachineModuleInfo MMI(TM.get());
+  M = parseMIR(*TM, MIRString, "test0", MMI);
+  ASSERT_TRUE(M);
+
+  auto *MF = MMI.getMachineFunction(*M->getFunction("test0"));
+  auto *MBB = MF->getBlockNumbered(0);
+
+  for (auto It = MBB->begin(); It != MBB->end(); ++It) {
+    MachineInstr &MI = *It;
+    ASSERT_TRUE(MI.isMetaInstruction());
+  }
 }
 
 TEST_F(MachineMetadataTest, MMSlotTrackerX64) {
@@ -311,7 +369,7 @@ body:             |
     liveins: $rdi
 
   %0:gr64 = COPY $rdi
-  %1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load 4 from %ir.p)
+  %1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load (s32) from %ir.p)
 ...
 )MIR";
 
@@ -346,7 +404,7 @@ body:             |
   MachineModuleSlotTracker MST(MF);
   // Print that MI with new machine metadata, which slot numbers should be
   // assigned.
-  EXPECT_EQ("%1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load 4 from %ir.p, "
+  EXPECT_EQ("%1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load (s32) from %ir.p, "
             "!alias.scope !0, !noalias !3)",
             print([&](raw_ostream &OS) {
               MI.print(OS, MST, /*IsStandalone=*/false, /*SkipOpers=*/false,
@@ -376,7 +434,7 @@ CHECK-DAG: ![[MMSCOPE1:[0-9]+]] = distinct !{!{{[0-9]+}}, ![[MMDOMAIN]], !"scope
 CHECK-DAG: ![[MMSET0:[0-9]+]] = !{![[MMSCOPE0]]}
 CHECK-DAG: ![[MMSET1:[0-9]+]] = !{![[MMSCOPE1]]}
 CHECK: body:
-CHECK: %1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load 4 from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
+CHECK: %1:gr32 = MOV32rm %0, 1, $noreg, 0, $noreg :: (load (s32) from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
 )";
   EXPECT_TRUE(checkOutput(CheckString, Output));
 }
@@ -409,7 +467,7 @@ body:             |
     %0:vgpr_32 = COPY $vgpr0
     %8:vreg_64 = REG_SEQUENCE %0, %subreg.sub0, %1, %subreg.sub1
     %6:vreg_64 = COPY %8
-    %5:vgpr_32 = FLAT_LOAD_DWORD killed %6, 0, 0, implicit $exec, implicit $flat_scr :: (load 4 from %ir.p)
+    %5:vgpr_32 = FLAT_LOAD_DWORD killed %6, 0, 0, implicit $exec, implicit $flat_scr :: (load (s32) from %ir.p)
 ...
 )MIR";
 
@@ -446,7 +504,7 @@ body:             |
   // assigned.
   EXPECT_EQ(
       "%5:vgpr_32 = FLAT_LOAD_DWORD killed %4, 0, 0, implicit $exec, implicit "
-      "$flat_scr :: (load 4 from %ir.p, !alias.scope !0, !noalias !3)",
+      "$flat_scr :: (load (s32) from %ir.p, !alias.scope !0, !noalias !3)",
       print([&](raw_ostream &OS) {
         MI.print(OS, MST, /*IsStandalone=*/false, /*SkipOpers=*/false,
                  /*SkipDebugLoc=*/false, /*AddNewLine=*/false);
@@ -475,7 +533,69 @@ CHECK-DAG: ![[MMSCOPE1:[0-9]+]] = distinct !{!{{[0-9]+}}, ![[MMDOMAIN]], !"scope
 CHECK-DAG: ![[MMSET0:[0-9]+]] = !{![[MMSCOPE0]]}
 CHECK-DAG: ![[MMSET1:[0-9]+]] = !{![[MMSCOPE1]]}
 CHECK: body:
-CHECK: %5:vgpr_32 = FLAT_LOAD_DWORD killed %4, 0, 0, implicit $exec, implicit $flat_scr :: (load 4 from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
+CHECK: %5:vgpr_32 = FLAT_LOAD_DWORD killed %4, 0, 0, implicit $exec, implicit $flat_scr :: (load (s32) from %ir.p, !alias.scope ![[MMSET0]], !noalias ![[MMSET1]])
 )";
   EXPECT_TRUE(checkOutput(CheckString, Output));
+}
+
+TEST_F(MachineMetadataTest, TiedOpsRewritten) {
+  auto TM = createTargetMachine(Triple::normalize("powerpc64--"), "", "");
+  if (!TM)
+    GTEST_SKIP();
+  StringRef MIRString = R"MIR(
+---
+name:            foo
+alignment:       16
+tracksRegLiveness: true
+frameInfo:
+  maxAlignment:    16
+machineFunctionInfo: {}
+body:             |
+  bb.0:
+    liveins: $r3
+    %0:gprc = COPY $r3
+    %0 = RLWIMI killed %0, $r3, 1, 0, 30
+    $r3 = COPY %0
+    BLR8 implicit $r3, implicit $lr8, implicit $rm
+
+...
+)MIR";
+  MachineModuleInfo MMI(TM.get());
+  M = parseMIR(*TM, MIRString, "foo", MMI);
+  ASSERT_TRUE(M);
+  auto *MF = MMI.getMachineFunction(*M->getFunction("foo"));
+  MachineFunctionProperties &Properties = MF->getProperties();
+  ASSERT_TRUE(Properties.hasProperty(
+      MachineFunctionProperties::Property::TiedOpsRewritten));
+}
+
+TEST_F(MachineMetadataTest, NoTiedOpsRewritten) {
+  auto TM = createTargetMachine(Triple::normalize("powerpc64--"), "", "");
+  if (!TM)
+    GTEST_SKIP();
+  StringRef MIRString = R"MIR(
+---
+name:            foo
+alignment:       16
+tracksRegLiveness: true
+frameInfo:
+  maxAlignment:    16
+machineFunctionInfo: {}
+body:             |
+  bb.0:
+    liveins: $r3
+    %0:gprc = COPY $r3
+    %1:gprc = RLWIMI killed %0, $r3, 1, 0, 30
+    $r3 = COPY %1
+    BLR8 implicit $r3, implicit $lr8, implicit $rm
+
+...
+)MIR";
+  MachineModuleInfo MMI(TM.get());
+  M = parseMIR(*TM, MIRString, "foo", MMI);
+  ASSERT_TRUE(M);
+  auto *MF = MMI.getMachineFunction(*M->getFunction("foo"));
+  MachineFunctionProperties &Properties = MF->getProperties();
+  ASSERT_FALSE(Properties.hasProperty(
+      MachineFunctionProperties::Property::TiedOpsRewritten));
 }

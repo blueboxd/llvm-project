@@ -19,6 +19,7 @@
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -751,6 +752,9 @@ unsigned AArch64RegisterInfo::getRegPressureLimit(const TargetRegisterClass *RC,
   case AArch64::FPR64RegClassID:
   case AArch64::FPR128RegClassID:
     return 32;
+
+  case AArch64::MatrixIndexGPR32_12_15RegClassID:
+    return 4;
 
   case AArch64::DDRegClassID:
   case AArch64::DDDRegClassID:

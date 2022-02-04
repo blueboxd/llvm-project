@@ -26,9 +26,9 @@ for adding this configuration.
 
 1. `git clone https://github.com/llvm/llvm-project.git; cd llvm-project` if
    you don't have a checkout yet.
-2. Install Bazel at the version indicated by [.bazelversion](./bazelversion),
+2. Install Bazel at the version indicated by [.bazelversion](./.bazelversion),
    following the official instructions, if you don't have it installed yet:
-   https://docs.bazel.build/versions/master/install.html.
+   https://docs.bazel.build/versions/main/install.html.
 3. `cd utils/bazel`
 4. `bazel build --config=generic_clang @llvm-project//...` (if building on Unix
    with Clang). `--config=generic_gcc` and `--config=msvc` are also available.
@@ -45,7 +45,7 @@ build --config=generic_clang
 ```
 
 You can enable
-[disk caching](https://docs.bazel.build/versions/master/remote-caching.html#disk-cache),
+[disk caching](https://docs.bazel.build/versions/main/remote-caching.html#disk-cache),
 which will cache build results
 
 ```.bazelrc
@@ -53,7 +53,7 @@ build --disk_cache=~/.cache/bazel-disk-cache
 ```
 
 You can instruct Bazel to use a ramdisk for its sandboxing operations via
-[--sandbox_base](https://docs.bazel.build/versions/master/command-line-reference.html#flag--sandbox_base),
+[--sandbox_base](https://docs.bazel.build/versions/main/command-line-reference.html#flag--sandbox_base),
 which can help avoid IO bottlenecks for the symlink stragegy used for
 sandboxing. This is especially important with many inputs and many cores (see
 https://github.com/bazelbuild/bazel/issues/11868):
@@ -75,56 +75,5 @@ configuration you'd like to use that isn't supported, please send a patch.
 
 # Usage
 
-To use in dependent projects using Bazel, you can import LLVM (e.g. as a
-submodule or using `http_archive`) and then use the provided configuration rule.
-
-FIXME: This needs to be updated to a commit that exists once such a commit
-exists.
-FIXME: It shouldn't be necessary to configure `http_archive` twice for the same
-archive (though caching means this isn't too expensive).
-
-```starlark
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
-
-LLVM_COMMIT = "0a1f0ee78122fc0642e8a1a18e1b2bc89c813387"
-
-LLVM_SHA256 = "4f59737ccfdad2cfb4587d796ce97c1eb5433de7ea0f57f248554b83e92d81d2"
-
-http_archive(
-    name = "llvm-project-raw",
-    build_file_content = "#empty",
-    sha256 = LLVM_SHA256,
-    strip_prefix = "llvm-project-" + LLVM_COMMIT,
-    urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
-)
-
-http_archive(
-    name = "llvm-bazel",
-    sha256 = LLVM_SHA256,
-    strip_prefix = "llvm-project-{}/utils/bazel".format(LLVM_COMMIT),
-    urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
-)
-
-load("@llvm-bazel//:configure.bzl", "llvm_configure")
-
-llvm_configure(
-    name = "llvm-project",
-    src_path = ".",
-    src_workspace = "@llvm-project-raw//:WORKSPACE",
-)
-
-load("@llvm-bazel//:terminfo.bzl", "llvm_terminfo_system")
-
-maybe(
-    llvm_terminfo_system,
-    name = "llvm_terminfo",
-)
-
-load("@llvm-bazel//:zlib.bzl", "llvm_zlib_system")
-
-maybe(
-    llvm_zlib_system,
-    name = "llvm_zlib",
-)
-```
+To use in dependent projects using Bazel, you can import LLVM and then use the
+provided configuration rule. See example usage in the `examples/` directory.

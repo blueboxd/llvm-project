@@ -498,7 +498,7 @@ public:
                                          MachineOperand &Dest,
                                          Optional<unsigned> &TiedDefIdx);
   bool parseOffset(int64_t &Offset);
-  bool parseAlignment(unsigned &Alignment);
+  bool parseAlignment(uint64_t &Alignment);
   bool parseAddrspace(unsigned &Addrspace);
   bool parseSectionID(Optional<MBBSectionID> &SID);
   bool parseOperandsOffset(MachineOperand &Op);
@@ -674,9 +674,10 @@ bool MIParser::parseBasicBlockDefinition(
   lex();
   bool HasAddressTaken = false;
   bool IsLandingPad = false;
+  bool IsInlineAsmBrIndirectTarget = false;
   bool IsEHFuncletEntry = false;
   Optional<MBBSectionID> SectionID;
-  unsigned Alignment = 0;
+  uint64_t Alignment = 0;
   BasicBlock *BB = nullptr;
   if (consumeIfPresent(MIToken::lparen)) {
     do {
@@ -688,6 +689,10 @@ bool MIParser::parseBasicBlockDefinition(
         break;
       case MIToken::kw_landing_pad:
         IsLandingPad = true;
+        lex();
+        break;
+      case MIToken::kw_inlineasm_br_indirect_target:
+        IsInlineAsmBrIndirectTarget = true;
         lex();
         break;
       case MIToken::kw_ehfunclet_entry:
@@ -737,6 +742,7 @@ bool MIParser::parseBasicBlockDefinition(
   if (HasAddressTaken)
     MBB->setHasAddressTaken();
   MBB->setIsEHPad(IsLandingPad);
+  MBB->setIsInlineAsmBrIndirectTarget(IsInlineAsmBrIndirectTarget);
   MBB->setIsEHFuncletEntry(IsEHFuncletEntry);
   if (SectionID.hasValue()) {
     MBB->setSectionID(SectionID.getValue());
@@ -869,11 +875,11 @@ bool MIParser::parseBasicBlock(MachineBasicBlock &MBB,
   // N.B: Multiple lists of successors and liveins are allowed and they're
   // merged into one.
   // Example:
-  //   liveins: %edi
-  //   liveins: %esi
+  //   liveins: $edi
+  //   liveins: $esi
   //
   // is equivalent to
-  //   liveins: %edi, %esi
+  //   liveins: $edi, $esi
   bool ExplicitSuccessors = false;
   while (true) {
     if (Token.is(MIToken::kw_successors)) {
@@ -1011,10 +1017,6 @@ bool MIParser::parse(MachineInstr *&MI) {
     Optional<unsigned> TiedDefIdx;
     if (parseMachineOperandAndTargetFlags(OpCode, Operands.size(), MO, TiedDefIdx))
       return true;
-    if ((OpCode == TargetOpcode::DBG_VALUE ||
-         OpCode == TargetOpcode::DBG_VALUE_LIST) &&
-        MO.isReg())
-      MO.setIsDebug();
     Operands.push_back(
         ParsedMachineOperand(MO, Loc, Token.location(), TiedDefIdx));
     if (Token.isNewlineOrEOF() || Token.is(MIToken::coloncolon) ||
@@ -1182,7 +1184,6 @@ bool MIParser::parseStandaloneMDNode(MDNode *&Node) {
     if (parseMDNode(Node))
       return true;
   } else if (Token.is(MIToken::md_diexpr)) {
-    // FIXME: This should be driven off of the UNIQUED property in Metadata.def
     if (parseDIExpression(Node))
       return true;
   } else if (Token.is(MIToken::md_dilocation)) {
@@ -2326,7 +2327,6 @@ bool MIParser::parseMetadataOperand(MachineOperand &Dest) {
     if (parseMDNode(Node))
       return true;
   } else if (Token.is(MIToken::md_diexpr)) {
-    // FIXME: This should be driven off of the UNIQUED property in Metadata.def
     if (parseDIExpression(Node))
       return true;
   }
@@ -2900,16 +2900,16 @@ bool MIParser::parseOffset(int64_t &Offset) {
   return false;
 }
 
-bool MIParser::parseAlignment(unsigned &Alignment) {
+bool MIParser::parseAlignment(uint64_t &Alignment) {
   assert(Token.is(MIToken::kw_align) || Token.is(MIToken::kw_basealign));
   lex();
   if (Token.isNot(MIToken::IntegerLiteral) || Token.integerValue().isSigned())
     return error("expected an integer literal after 'align'");
-  if (getUnsigned(Alignment))
+  if (getUint64(Alignment))
     return true;
   lex();
 
-  if (!isPowerOf2_32(Alignment))
+  if (!isPowerOf2_64(Alignment))
     return error("expected a power-of-2 literal after 'align'");
 
   return false;
@@ -3220,18 +3220,34 @@ bool MIParser::parseMachineMemoryOperand(MachineMemOperand *&Dest) {
   if (parseOptionalAtomicOrdering(FailureOrder))
     return true;
 
+  LLT MemoryType;
   if (Token.isNot(MIToken::IntegerLiteral) &&
-      Token.isNot(MIToken::kw_unknown_size))
-    return error("expected the size integer literal or 'unknown-size' after "
+      Token.isNot(MIToken::kw_unknown_size) &&
+      Token.isNot(MIToken::lparen))
+    return error("expected memory LLT, the size integer literal or 'unknown-size' after "
                  "memory operation");
-  uint64_t Size;
+
+  uint64_t Size = MemoryLocation::UnknownSize;
   if (Token.is(MIToken::IntegerLiteral)) {
     if (getUint64(Size))
       return true;
+
+    // Convert from bytes to bits for storage.
+    MemoryType = LLT::scalar(8 * Size);
+    lex();
   } else if (Token.is(MIToken::kw_unknown_size)) {
     Size = MemoryLocation::UnknownSize;
+    lex();
+  } else {
+    if (expectAndConsume(MIToken::lparen))
+      return true;
+    if (parseLowLevelType(Token.location(), MemoryType))
+      return true;
+    if (expectAndConsume(MIToken::rparen))
+      return true;
+
+    Size = MemoryType.getSizeInBytes();
   }
-  lex();
 
   MachinePointerInfo Ptr = MachinePointerInfo();
   if (Token.is(MIToken::Identifier)) {
@@ -3247,7 +3263,8 @@ bool MIParser::parseMachineMemoryOperand(MachineMemOperand *&Dest) {
     if (parseMachinePointerInfo(Ptr))
       return true;
   }
-  unsigned BaseAlignment = (Size != MemoryLocation::UnknownSize ? Size : 1);
+  uint64_t BaseAlignment =
+      (Size != MemoryLocation::UnknownSize ? PowerOf2Ceil(Size) : 1);
   AAMDNodes AAInfo;
   MDNode *Range = nullptr;
   while (consumeIfPresent(MIToken::comma)) {
@@ -3294,8 +3311,8 @@ bool MIParser::parseMachineMemoryOperand(MachineMemOperand *&Dest) {
   }
   if (expectAndConsume(MIToken::rparen))
     return true;
-  Dest = MF.getMachineMemOperand(Ptr, Flags, Size, Align(BaseAlignment), AAInfo,
-                                 Range, SSID, Order, FailureOrder);
+  Dest = MF.getMachineMemOperand(Ptr, Flags, MemoryType, Align(BaseAlignment),
+                                 AAInfo, Range, SSID, Order, FailureOrder);
   return false;
 }
 

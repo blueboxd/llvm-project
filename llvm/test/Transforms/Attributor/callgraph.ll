@@ -76,9 +76,24 @@ define void @func7(void ()* %unknown) {
   ret void
 }
 
+; Check there's no crash if something that isn't a function appears in !callees
+define void @undef_in_callees() {
+; CHECK-LABEL: @undef_in_callees(
+; CHECK-NEXT:  cond.end.i:
+; CHECK-NEXT:    call void undef(i8* undef, i32 undef, i8* undef), !callees !3
+; CHECK-NEXT:    ret void
+;
+cond.end.i:
+  call void undef(i8* undef, i32 undef, i8* undef), !callees !3
+  ret void
+}
+
 !0 = !{!1}
 !1 = !{i64 0, i1 false}
 !2 = !{void ()* @func3, void ()* @func4}
+!3 = distinct !{void (i8*, i32, i8*)* undef, void (i8*, i32, i8*)* null}
+
+; UTC_ARGS: --disable
 
 ; DOT-DAG: Node[[FUNC1:0x[a-z0-9]+]] [shape=record,label="{func1}"];
 ; DOT-DAG: Node[[FUNC2:0x[a-z0-9]+]] [shape=record,label="{func2}"];

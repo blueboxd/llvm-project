@@ -72,7 +72,7 @@ entry:
 ; CHECK-NEXT:          .byte   0x40                            # -IsInterruptHandler, +IsFunctionNamePresent, -IsAllocaUsed
 ; CHECK-NEXT:                                          # OnConditionDirective = 0, -IsCRSaved, -IsLRSaved
 ; CHECK-NEXT:          .byte   0x80                            # +IsBackChainStored, -IsFixup, NumOfFPRsSaved = 0
-; CHECK-NEXT:          .byte   0x00                            # -HasVectorInfo, -HasExtensionTable, NumOfGPRsSaved = 0
+; CHECK-NEXT:          .byte   0x00                            # -HasExtensionTable, -HasVectorInfo, NumOfGPRsSaved = 0
 ; CHECK-NEXT:          .byte   0x00                            # NumberOfFixedParms = 0
 ; CHECK-NEXT:          .byte   0x01                            # NumberOfFPParms = 0, +HasParmsOnStack
 ; CHECK-NEXT:          .vbyte  4, L..bar0-.bar                 # Function size
@@ -120,7 +120,7 @@ entry:
 ; CHECK-NEXT:          .byte   0x41                            # -IsInterruptHandler, +IsFunctionNamePresent, -IsAllocaUsed
 ; CHECK-NEXT:                                          # OnConditionDirective = 0, -IsCRSaved, +IsLRSaved
 ; CHECK-NEXT:          .byte   0x80                            # +IsBackChainStored, -IsFixup, NumOfFPRsSaved = 0
-; CHECK-NEXT:          .byte   0x00                            # -HasVectorInfo, -HasExtensionTable, NumOfGPRsSaved = 0
+; CHECK-NEXT:          .byte   0x00                            # -HasExtensionTable, -HasVectorInfo, NumOfGPRsSaved = 0
 ; CHECK-NEXT:          .byte   0x00                            # NumberOfFixedParms = 0
 ; CHECK-NEXT:          .byte   0x01                            # NumberOfFPParms = 0, +HasParmsOnStack
 ; CHECK-NEXT:          .vbyte  4, L..main0-.main               # Function size
@@ -296,10 +296,10 @@ entry:
 ; CHECK-NEXT:          .byte   3                               # Advance line 0
 ; CHECK-NEXT:          .byte   0
 ; CHECK-NEXT:          .byte   1
-; CHECK-NEXT:          .byte   0                               # Set address to L..sec_end0
+; CHECK-NEXT:          .byte   0                               # Set address to L..func_end0
 ; CHECK-NEXT:          .byte   5
 ; CHECK-NEXT:          .byte   2
-; CHECK-NEXT:          .vbyte  4, L..sec_end0
+; CHECK-NEXT:          .vbyte  4, L..func_end0
 ; CHECK-NEXT:          .byte   0                               # End sequence
 ; CHECK-NEXT:          .byte   1
 ; CHECK-NEXT:          .byte   1
@@ -328,10 +328,10 @@ entry:
 ; CHECK-NEXT:          .byte   3                               # Advance line 0
 ; CHECK-NEXT:          .byte   0
 ; CHECK-NEXT:          .byte   1
-; CHECK-NEXT:          .byte   0                               # Set address to L..sec_end0
+; CHECK-NEXT:          .byte   0                               # Set address to L..func_end1
 ; CHECK-NEXT:          .byte   5
 ; CHECK-NEXT:          .byte   2
-; CHECK-NEXT:          .vbyte  4, L..sec_end0
+; CHECK-NEXT:          .vbyte  4, L..func_end1
 ; CHECK-NEXT:          .byte   0                               # End sequence
 ; CHECK-NEXT:          .byte   1
 ; CHECK-NEXT:          .byte   1

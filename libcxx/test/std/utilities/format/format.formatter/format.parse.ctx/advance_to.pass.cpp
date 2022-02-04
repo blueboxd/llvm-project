@@ -7,6 +7,7 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: libcpp-no-concepts
+// UNSUPPORTED: libcpp-has-no-incomplete-format
 
 // <format>
 
@@ -38,10 +39,10 @@ constexpr void test(const CharT* fmt) {
     std::basic_format_parse_context context(view);
 
     context.advance_to(context.begin() + 1);
-    assert(context.begin() == view.begin() + 1);
+    assert(std::to_address(context.begin()) == std::to_address(view.begin()) + 1);
 
     context.advance_to(context.begin() + 1);
-    assert(context.begin() == view.begin() + 2);
+    assert(std::to_address(context.begin()) == std::to_address(view.begin()) + 2);
 
     context.advance_to(context.begin() + 1);
     assert(context.begin() == context.end());
@@ -54,7 +55,7 @@ constexpr bool test() {
 #ifndef _LIBCPP_HAS_NO_CHAR8_T
   test(u8"abc");
 #endif
-#ifndef _LIBCPP_HAS_NO_UNICODE_CHARS
+#ifndef TEST_HAS_NO_UNICODE_CHARS
   test(u"abc");
   test(U"abc");
 #endif

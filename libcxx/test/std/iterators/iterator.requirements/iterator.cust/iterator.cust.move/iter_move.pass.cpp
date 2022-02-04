@@ -8,7 +8,6 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: libcpp-no-concepts
-// UNSUPPORTED: gcc-10
 
 // template<class I>
 // unspecified iter_move;
@@ -22,6 +21,8 @@
 
 #include "../unqualified_lookup_wrapper.h"
 
+using IterMoveT = decltype(std::ranges::iter_move);
+
 // Wrapper around an iterator for testing `iter_move` when an unqualified call to `iter_move` isn't
 // possible.
 template <typename I>
@@ -32,10 +33,10 @@ public:
   constexpr explicit iterator_wrapper(I i) noexcept : base_(std::move(i)) {}
 
   // `noexcept(false)` is used to check that this operator is called.
-  [[nodiscard]] constexpr decltype(auto) operator*() const& noexcept(false) { return *base_; }
+  constexpr decltype(auto) operator*() const& noexcept(false) { return *base_; }
 
   // `noexcept` is used to check that this operator is called.
-  [[nodiscard]] constexpr auto&& operator*() && noexcept { return std::move(*base_); }
+  constexpr auto&& operator*() && noexcept { return std::move(*base_); }
 
   constexpr iterator_wrapper& operator++() noexcept {
     ++base_;
@@ -44,7 +45,7 @@ public:
 
   constexpr void operator++(int) noexcept { ++base_; }
 
-  [[nodiscard]] constexpr bool operator==(iterator_wrapper const& other) const noexcept { return base_ == other.base_; }
+  constexpr bool operator==(iterator_wrapper const& other) const noexcept { return base_ == other.base_; }
 
 private:
   I base_ = I{};
@@ -114,7 +115,7 @@ struct WithoutADL {
   constexpr bool operator==(WithoutADL const&) const;
 };
 
-constexpr bool check_iter_move() {
+constexpr bool test() {
   constexpr int full_size = 100;
   constexpr int half_size = full_size / 2;
   constexpr int reset = 0;
@@ -174,18 +175,19 @@ constexpr bool check_iter_move() {
   return true;
 }
 
-template <typename T>
-concept can_iter_move = requires (T t) { std::ranges::iter_move(t); };
+static_assert(!std::is_invocable_v<IterMoveT, int*, int*>); // too many arguments
+static_assert(!std::is_invocable_v<IterMoveT, int>);
 
-int main(int, char**) {
-  static_assert(check_iter_move());
-  check_iter_move();
+// Test ADL-proofing.
+struct Incomplete;
+template<class T> struct Holder { T t; };
+static_assert(std::is_invocable_v<IterMoveT, Holder<Incomplete>**>);
+static_assert(std::is_invocable_v<IterMoveT, Holder<Incomplete>**&>);
 
-  // Make sure that `iter_move` SFINAEs away when the type can't be iter_move'd
-  {
-    struct NoIterMove { };
-    static_assert(!can_iter_move<NoIterMove>);
-  }
+int main(int, char**)
+{
+  test();
+  static_assert(test());
 
   return 0;
 }

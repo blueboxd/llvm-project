@@ -32,6 +32,13 @@
 LLVM_C_EXTERN_C_BEGIN
 
 /**
+ * @defgroup LLVMCExecutionEngineLLJIT LLJIT
+ * @ingroup LLVMCExecutionEngine
+ *
+ * @{
+ */
+
+/**
  * A function for constructing an ObjectLinkingLayer instance to be used
  * by an LLJIT instance.
  *
@@ -208,7 +215,7 @@ LLVMErrorRef LLVMOrcLLJITAddLLVMIRModuleWithRT(LLVMOrcLLJITRef J,
  * This operation does not take ownership of the Name argument.
  */
 LLVMErrorRef LLVMOrcLLJITLookup(LLVMOrcLLJITRef J,
-                                LLVMOrcJITTargetAddress *Result,
+                                LLVMOrcExecutorAddress *Result,
                                 const char *Name);
 
 /**
@@ -226,6 +233,18 @@ LLVMOrcLLJITGetObjTransformLayer(LLVMOrcLLJITRef J);
  * Returns a non-owning reference to the LLJIT instance's IR transform layer.
  */
 LLVMOrcIRTransformLayerRef LLVMOrcLLJITGetIRTransformLayer(LLVMOrcLLJITRef J);
+
+/**
+ * Get the LLJIT instance's default data layout string.
+ *
+ * This string is owned by the LLJIT instance and does not need to be freed
+ * by the caller.
+ */
+const char *LLVMOrcLLJITGetDataLayoutStr(LLVMOrcLLJITRef J);
+
+/**
+ * @}
+ */
 
 LLVM_C_EXTERN_C_END
 

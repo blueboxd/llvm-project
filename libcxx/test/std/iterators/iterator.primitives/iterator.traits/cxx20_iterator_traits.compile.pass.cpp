@@ -8,7 +8,9 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: libcpp-no-concepts
-// UNSUPPORTED: gcc-10
+
+// This test uses iterator types from std::filesystem, which were introduced in macOS 10.15.
+// XFAIL: use_system_cxx_lib && target={{.+}}-apple-macosx10.{{9|10|11|12|13|14}}
 
 // template<class T>
 // struct iterator_traits;
@@ -570,7 +572,7 @@ static_assert(std::same_as<InputTestIteratorTraits::reference, int&>);
 static_assert(std::same_as<InputTestIteratorTraits::pointer, int*>);
 static_assert(!has_iterator_concept_v<InputTestIteratorTraits>);
 
-using OutputTestIteratorTraits = std::iterator_traits<output_iterator<int*>>;
+using OutputTestIteratorTraits = std::iterator_traits<cpp17_output_iterator<int*>>;
 static_assert(std::same_as<OutputTestIteratorTraits::iterator_category, std::output_iterator_tag>);
 static_assert(std::same_as<OutputTestIteratorTraits::value_type, void>);
 static_assert(std::same_as<OutputTestIteratorTraits::difference_type, std::ptrdiff_t>);

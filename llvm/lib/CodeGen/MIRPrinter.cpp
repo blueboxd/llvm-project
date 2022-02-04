@@ -217,6 +217,10 @@ void MIRPrinter::print(const MachineFunction &MF) {
       MachineFunctionProperties::Property::Selected);
   YamlMF.FailedISel = MF.getProperties().hasProperty(
       MachineFunctionProperties::Property::FailedISel);
+  YamlMF.FailsVerification = MF.getProperties().hasProperty(
+      MachineFunctionProperties::Property::FailsVerification);
+  YamlMF.TracksDebugUserValues = MF.getProperties().hasProperty(
+      MachineFunctionProperties::Property::TracksDebugUserValues);
 
   convert(YamlMF, MF.getRegInfo(), MF.getSubtarget().getRegisterInfo());
   MachineModuleSlotTracker MST(&MF);
@@ -224,10 +228,14 @@ void MIRPrinter::print(const MachineFunction &MF) {
   convert(MST, YamlMF.FrameInfo, MF.getFrameInfo());
   convertStackObjects(YamlMF, MF, MST);
   convertCallSiteObjects(YamlMF, MF, MST);
-  for (auto &Sub : MF.DebugValueSubstitutions)
-    YamlMF.DebugValueSubstitutions.push_back({Sub.first.first, Sub.first.second,
-                                              Sub.second.first,
-                                              Sub.second.second});
+  for (const auto &Sub : MF.DebugValueSubstitutions) {
+    const auto &SubSrc = Sub.Src;
+    const auto &SubDest = Sub.Dest;
+    YamlMF.DebugValueSubstitutions.push_back({SubSrc.first, SubSrc.second,
+                                              SubDest.first,
+                                              SubDest.second,
+                                              Sub.Subreg});
+  }
   if (const auto *ConstantPool = MF.getConstantPool())
     convert(YamlMF, *ConstantPool);
   if (const auto *JumpTableInfo = MF.getJumpTableInfo())

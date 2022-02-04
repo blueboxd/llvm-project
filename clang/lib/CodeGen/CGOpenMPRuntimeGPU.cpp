@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "CGOpenMPRuntimeGPU.h"
-#include "CGOpenMPRuntimeNVPTX.h"
 #include "CodeGenFunction.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclOpenMP.h"
@@ -21,7 +20,7 @@
 #include "clang/Basic/Cuda.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Frontend/OpenMP/OMPGridValues.h"
-#include "llvm/IR/IntrinsicsNVPTX.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -106,8 +105,7 @@ public:
 /// is the same for all known NVPTX architectures.
 enum MachineConfiguration : unsigned {
   /// See "llvm/Frontend/OpenMP/OMPGridValues.h" for various related target
-  /// specific Grid Values like GV_Warp_Size, GV_Warp_Size_Log2,
-  /// and GV_Warp_Size_Log2_Mask.
+  /// specific Grid Values like GV_Warp_Size, GV_Slot_Size
 
   /// Global memory alignment for performance.
   GlobalMemoryAlignment = 128,
@@ -339,7 +337,7 @@ class CheckVarsEscapingDeclContext final
     assert(!GlobalizedRD &&
            "Record for globalized variables is built already.");
     ArrayRef<const ValueDecl *> EscapedDeclsForParallel, EscapedDeclsForTeams;
-    unsigned WarpSize = CGF.getTarget().getGridValue(llvm::omp::GV_Warp_Size);
+    unsigned WarpSize = CGF.getTarget().getGridValue().GV_Warp_Size;
     if (IsInTTDRegion)
       EscapedDeclsForTeams = EscapedDecls.getArrayRef();
     else
@@ -536,7 +534,7 @@ public:
 static llvm::Value *getNVPTXWarpID(CodeGenFunction &CGF) {
   CGBuilderTy &Bld = CGF.Builder;
   unsigned LaneIDBits =
-      CGF.getTarget().getGridValue(llvm::omp::GV_Warp_Size_Log2);
+      llvm::Log2_32(CGF.getTarget().getGridValue().GV_Warp_Size);
   auto &RT = static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
   return Bld.CreateAShr(RT.getGPUThreadID(CGF), LaneIDBits, "nvptx_warp_id");
 }
@@ -546,68 +544,12 @@ static llvm::Value *getNVPTXWarpID(CodeGenFunction &CGF) {
 /// on the NVPTX device, to generate more efficient code.
 static llvm::Value *getNVPTXLaneID(CodeGenFunction &CGF) {
   CGBuilderTy &Bld = CGF.Builder;
-  unsigned LaneIDMask = CGF.getContext().getTargetInfo().getGridValue(
-      llvm::omp::GV_Warp_Size_Log2_Mask);
+  unsigned LaneIDBits =
+      llvm::Log2_32(CGF.getTarget().getGridValue().GV_Warp_Size);
+  unsigned LaneIDMask = ~0u >> (32u - LaneIDBits);
   auto &RT = static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
   return Bld.CreateAnd(RT.getGPUThreadID(CGF), Bld.getInt32(LaneIDMask),
                        "nvptx_lane_id");
-}
-
-/// Get the value of the thread_limit clause in the teams directive.
-/// For the 'generic' execution mode, the runtime encodes thread_limit in
-/// the launch parameters, always starting thread_limit+warpSize threads per
-/// CTA. The threads in the last warp are reserved for master execution.
-/// For the 'spmd' execution mode, all threads in a CTA are part of the team.
-static llvm::Value *getThreadLimit(CodeGenFunction &CGF,
-                                   bool IsInSPMDExecutionMode = false) {
-  CGBuilderTy &Bld = CGF.Builder;
-  auto &RT = static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
-  llvm::Value *ThreadLimit = nullptr;
-  if (IsInSPMDExecutionMode)
-    ThreadLimit = RT.getGPUNumThreads(CGF);
-  else {
-    llvm::Value *GPUNumThreads = RT.getGPUNumThreads(CGF);
-    llvm::Value *GPUWarpSize = RT.getGPUWarpSize(CGF);
-    ThreadLimit = Bld.CreateNUWSub(GPUNumThreads, GPUWarpSize, "thread_limit");
-  }
-  assert(ThreadLimit != nullptr && "Expected non-null ThreadLimit");
-  return ThreadLimit;
-}
-
-/// Get the thread id of the OMP master thread.
-/// The master thread id is the first thread (lane) of the last warp in the
-/// GPU block.  Warp size is assumed to be some power of 2.
-/// Thread id is 0 indexed.
-/// E.g: If NumThreads is 33, master id is 32.
-///      If NumThreads is 64, master id is 32.
-///      If NumThreads is 1024, master id is 992.
-static llvm::Value *getMasterThreadID(CodeGenFunction &CGF) {
-  CGBuilderTy &Bld = CGF.Builder;
-  auto &RT = static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
-  llvm::Value *NumThreads = RT.getGPUNumThreads(CGF);
-  // We assume that the warp size is a power of 2.
-  llvm::Value *Mask = Bld.CreateNUWSub(RT.getGPUWarpSize(CGF), Bld.getInt32(1));
-
-  llvm::Value *NumThreadsSubOne = Bld.CreateNUWSub(NumThreads, Bld.getInt32(1));
-  return Bld.CreateAnd(NumThreadsSubOne, Bld.CreateNot(Mask), "master_tid");
-}
-
-CGOpenMPRuntimeGPU::WorkerFunctionState::WorkerFunctionState(
-    CodeGenModule &CGM, SourceLocation Loc)
-    : WorkerFn(nullptr), CGFI(CGM.getTypes().arrangeNullaryFunction()),
-      Loc(Loc) {
-  createWorkerFunction(CGM);
-}
-
-void CGOpenMPRuntimeGPU::WorkerFunctionState::createWorkerFunction(
-    CodeGenModule &CGM) {
-  // Create an worker function with no arguments.
-
-  WorkerFn = llvm::Function::Create(
-      CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
-      /*placeholder=*/"_worker", &CGM.getModule());
-  CGM.SetInternalFunctionAttributes(GlobalDecl(), WorkerFn, CGFI);
-  WorkerFn->setDoesNotRecurse();
 }
 
 CGOpenMPRuntimeGPU::ExecutionMode
@@ -1073,23 +1015,19 @@ void CGOpenMPRuntimeGPU::emitNonSPMDKernel(const OMPExecutableDirective &D,
                                              const RegionCodeGenTy &CodeGen) {
   ExecutionRuntimeModesRAII ModeRAII(CurrentExecutionMode);
   EntryFunctionState EST;
-  WorkerFunctionState WST(CGM, D.getBeginLoc());
-  Work.clear();
   WrapperFunctionsMap.clear();
 
   // Emit target region as a standalone region.
   class NVPTXPrePostActionTy : public PrePostActionTy {
     CGOpenMPRuntimeGPU::EntryFunctionState &EST;
-    CGOpenMPRuntimeGPU::WorkerFunctionState &WST;
 
   public:
-    NVPTXPrePostActionTy(CGOpenMPRuntimeGPU::EntryFunctionState &EST,
-                         CGOpenMPRuntimeGPU::WorkerFunctionState &WST)
-        : EST(EST), WST(WST) {}
+    NVPTXPrePostActionTy(CGOpenMPRuntimeGPU::EntryFunctionState &EST)
+        : EST(EST) {}
     void Enter(CodeGenFunction &CGF) override {
       auto &RT =
           static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
-      RT.emitNonSPMDEntryHeader(CGF, EST, WST);
+      RT.emitKernelInit(CGF, EST, /* IsSPMD */ false);
       // Skip target region initialization.
       RT.setLocThreadIdInsertPt(CGF, /*AtCurrentPoint=*/true);
     }
@@ -1097,93 +1035,33 @@ void CGOpenMPRuntimeGPU::emitNonSPMDKernel(const OMPExecutableDirective &D,
       auto &RT =
           static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
       RT.clearLocThreadIdInsertPt(CGF);
-      RT.emitNonSPMDEntryFooter(CGF, EST);
+      RT.emitKernelDeinit(CGF, EST, /* IsSPMD */ false);
     }
-  } Action(EST, WST);
+  } Action(EST);
   CodeGen.setAction(Action);
   IsInTTDRegion = true;
   emitTargetOutlinedFunctionHelper(D, ParentName, OutlinedFn, OutlinedFnID,
                                    IsOffloadEntry, CodeGen);
   IsInTTDRegion = false;
-
-  // Now change the name of the worker function to correspond to this target
-  // region's entry function.
-  WST.WorkerFn->setName(Twine(OutlinedFn->getName(), "_worker"));
-
-  // Create the worker function
-  emitWorkerFunction(WST);
 }
 
-// Setup NVPTX threads for master-worker OpenMP scheme.
-void CGOpenMPRuntimeGPU::emitNonSPMDEntryHeader(CodeGenFunction &CGF,
-                                                  EntryFunctionState &EST,
-                                                  WorkerFunctionState &WST) {
+void CGOpenMPRuntimeGPU::emitKernelInit(CodeGenFunction &CGF,
+                                        EntryFunctionState &EST, bool IsSPMD) {
   CGBuilderTy &Bld = CGF.Builder;
-
-  llvm::BasicBlock *WorkerBB = CGF.createBasicBlock(".worker");
-  llvm::BasicBlock *MasterCheckBB = CGF.createBasicBlock(".mastercheck");
-  llvm::BasicBlock *MasterBB = CGF.createBasicBlock(".master");
-  EST.ExitBB = CGF.createBasicBlock(".exit");
-
-  auto &RT = static_cast<CGOpenMPRuntimeGPU &>(CGF.CGM.getOpenMPRuntime());
-  llvm::Value *GPUThreadID = RT.getGPUThreadID(CGF);
-  llvm::Value *ThreadLimit = getThreadLimit(CGF);
-  llvm::Value *IsWorker = Bld.CreateICmpULT(GPUThreadID, ThreadLimit);
-  Bld.CreateCondBr(IsWorker, WorkerBB, MasterCheckBB);
-
-  CGF.EmitBlock(WorkerBB);
-  emitCall(CGF, WST.Loc, WST.WorkerFn);
-  CGF.EmitBranch(EST.ExitBB);
-
-  CGF.EmitBlock(MasterCheckBB);
-  GPUThreadID = RT.getGPUThreadID(CGF);
-  llvm::Value *MasterThreadID = getMasterThreadID(CGF);
-  llvm::Value *IsMaster = Bld.CreateICmpEQ(GPUThreadID, MasterThreadID);
-  Bld.CreateCondBr(IsMaster, MasterBB, EST.ExitBB);
-
-  CGF.EmitBlock(MasterBB);
-  IsInTargetMasterThreadRegion = true;
-  // SEQUENTIAL (MASTER) REGION START
-  // First action in sequential region:
-  // Initialize the state of the OpenMP runtime library on the GPU.
-  // TODO: Optimize runtime initialization and pass in correct value.
-  llvm::Value *Args[] = {getThreadLimit(CGF),
-                         Bld.getInt16(/*RequiresOMPRuntime=*/1)};
-  CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                          CGM.getModule(), OMPRTL___kmpc_kernel_init),
-                      Args);
-
-  emitGenericVarsProlog(CGF, WST.Loc);
+  Bld.restoreIP(OMPBuilder.createTargetInit(Bld, IsSPMD, requiresFullRuntime()));
+  IsInTargetMasterThreadRegion = IsSPMD;
+  if (!IsSPMD)
+    emitGenericVarsProlog(CGF, EST.Loc);
 }
 
-void CGOpenMPRuntimeGPU::emitNonSPMDEntryFooter(CodeGenFunction &CGF,
-                                                  EntryFunctionState &EST) {
-  IsInTargetMasterThreadRegion = false;
-  if (!CGF.HaveInsertPoint())
-    return;
+void CGOpenMPRuntimeGPU::emitKernelDeinit(CodeGenFunction &CGF,
+                                          EntryFunctionState &EST,
+                                          bool IsSPMD) {
+  if (!IsSPMD)
+    emitGenericVarsEpilog(CGF);
 
-  emitGenericVarsEpilog(CGF);
-
-  if (!EST.ExitBB)
-    EST.ExitBB = CGF.createBasicBlock(".exit");
-
-  llvm::BasicBlock *TerminateBB = CGF.createBasicBlock(".termination.notifier");
-  CGF.EmitBranch(TerminateBB);
-
-  CGF.EmitBlock(TerminateBB);
-  // Signal termination condition.
-  // TODO: Optimize runtime initialization and pass in correct value.
-  llvm::Value *Args[] = {CGF.Builder.getInt16(/*IsOMPRuntimeInitialized=*/1)};
-  CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                          CGM.getModule(), OMPRTL___kmpc_kernel_deinit),
-                      Args);
-  // Barrier to terminate worker threads.
-  syncCTAThreads(CGF);
-  // Master thread jumps to exit point.
-  CGF.EmitBranch(EST.ExitBB);
-
-  CGF.EmitBlock(EST.ExitBB);
-  EST.ExitBB = nullptr;
+  CGBuilderTy &Bld = CGF.Builder;
+  OMPBuilder.createTargetDeinit(Bld, IsSPMD, requiresFullRuntime());
 }
 
 void CGOpenMPRuntimeGPU::emitSPMDKernel(const OMPExecutableDirective &D,
@@ -1202,76 +1080,26 @@ void CGOpenMPRuntimeGPU::emitSPMDKernel(const OMPExecutableDirective &D,
   class NVPTXPrePostActionTy : public PrePostActionTy {
     CGOpenMPRuntimeGPU &RT;
     CGOpenMPRuntimeGPU::EntryFunctionState &EST;
-    const OMPExecutableDirective &D;
 
   public:
     NVPTXPrePostActionTy(CGOpenMPRuntimeGPU &RT,
-                         CGOpenMPRuntimeGPU::EntryFunctionState &EST,
-                         const OMPExecutableDirective &D)
-        : RT(RT), EST(EST), D(D) {}
+                         CGOpenMPRuntimeGPU::EntryFunctionState &EST)
+        : RT(RT), EST(EST) {}
     void Enter(CodeGenFunction &CGF) override {
-      RT.emitSPMDEntryHeader(CGF, EST, D);
+      RT.emitKernelInit(CGF, EST, /* IsSPMD */ true);
       // Skip target region initialization.
       RT.setLocThreadIdInsertPt(CGF, /*AtCurrentPoint=*/true);
     }
     void Exit(CodeGenFunction &CGF) override {
       RT.clearLocThreadIdInsertPt(CGF);
-      RT.emitSPMDEntryFooter(CGF, EST);
+      RT.emitKernelDeinit(CGF, EST, /* IsSPMD */ true);
     }
-  } Action(*this, EST, D);
+  } Action(*this, EST);
   CodeGen.setAction(Action);
   IsInTTDRegion = true;
   emitTargetOutlinedFunctionHelper(D, ParentName, OutlinedFn, OutlinedFnID,
                                    IsOffloadEntry, CodeGen);
   IsInTTDRegion = false;
-}
-
-void CGOpenMPRuntimeGPU::emitSPMDEntryHeader(
-    CodeGenFunction &CGF, EntryFunctionState &EST,
-    const OMPExecutableDirective &D) {
-  CGBuilderTy &Bld = CGF.Builder;
-
-  // Setup BBs in entry function.
-  llvm::BasicBlock *ExecuteBB = CGF.createBasicBlock(".execute");
-  EST.ExitBB = CGF.createBasicBlock(".exit");
-
-  llvm::Value *Args[] = {getThreadLimit(CGF, /*IsInSPMDExecutionMode=*/true),
-                         /*RequiresOMPRuntime=*/
-                         Bld.getInt16(RequiresFullRuntime ? 1 : 0)};
-  CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                          CGM.getModule(), OMPRTL___kmpc_spmd_kernel_init),
-                      Args);
-
-  CGF.EmitBranch(ExecuteBB);
-
-  CGF.EmitBlock(ExecuteBB);
-
-  IsInTargetMasterThreadRegion = true;
-}
-
-void CGOpenMPRuntimeGPU::emitSPMDEntryFooter(CodeGenFunction &CGF,
-                                               EntryFunctionState &EST) {
-  IsInTargetMasterThreadRegion = false;
-  if (!CGF.HaveInsertPoint())
-    return;
-
-  if (!EST.ExitBB)
-    EST.ExitBB = CGF.createBasicBlock(".exit");
-
-  llvm::BasicBlock *OMPDeInitBB = CGF.createBasicBlock(".omp.deinit");
-  CGF.EmitBranch(OMPDeInitBB);
-
-  CGF.EmitBlock(OMPDeInitBB);
-  // DeInitialize the OMP state in the runtime; called by all active threads.
-  llvm::Value *Args[] = {/*RequiresOMPRuntime=*/
-                         CGF.Builder.getInt16(RequiresFullRuntime ? 1 : 0)};
-  CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                          CGM.getModule(), OMPRTL___kmpc_spmd_kernel_deinit_v2),
-                      Args);
-  CGF.EmitBranch(EST.ExitBB);
-
-  CGF.EmitBlock(EST.ExitBB);
-  EST.ExitBB = nullptr;
 }
 
 // Create a unique global variable to indicate the execution mode of this target
@@ -1282,143 +1110,13 @@ void CGOpenMPRuntimeGPU::emitSPMDEntryFooter(CodeGenFunction &CGF,
 // warps participate in parallel work.
 static void setPropertyExecutionMode(CodeGenModule &CGM, StringRef Name,
                                      bool Mode) {
-  auto *GVMode =
-      new llvm::GlobalVariable(CGM.getModule(), CGM.Int8Ty, /*isConstant=*/true,
-                               llvm::GlobalValue::WeakAnyLinkage,
-                               llvm::ConstantInt::get(CGM.Int8Ty, Mode ? 0 : 1),
-                               Twine(Name, "_exec_mode"));
+  auto *GVMode = new llvm::GlobalVariable(
+      CGM.getModule(), CGM.Int8Ty, /*isConstant=*/true,
+      llvm::GlobalValue::WeakAnyLinkage,
+      llvm::ConstantInt::get(CGM.Int8Ty, Mode ? OMP_TGT_EXEC_MODE_SPMD
+                                              : OMP_TGT_EXEC_MODE_GENERIC),
+      Twine(Name, "_exec_mode"));
   CGM.addCompilerUsedGlobal(GVMode);
-}
-
-void CGOpenMPRuntimeGPU::emitWorkerFunction(WorkerFunctionState &WST) {
-  ASTContext &Ctx = CGM.getContext();
-
-  CodeGenFunction CGF(CGM, /*suppressNewContext=*/true);
-  CGF.StartFunction(GlobalDecl(), Ctx.VoidTy, WST.WorkerFn, WST.CGFI, {},
-                    WST.Loc, WST.Loc);
-  emitWorkerLoop(CGF, WST);
-  CGF.FinishFunction();
-}
-
-void CGOpenMPRuntimeGPU::emitWorkerLoop(CodeGenFunction &CGF,
-                                        WorkerFunctionState &WST) {
-  //
-  // The workers enter this loop and wait for parallel work from the master.
-  // When the master encounters a parallel region it sets up the work + variable
-  // arguments, and wakes up the workers.  The workers first check to see if
-  // they are required for the parallel region, i.e., within the # of requested
-  // parallel threads.  The activated workers load the variable arguments and
-  // execute the parallel work.
-  //
-
-  CGBuilderTy &Bld = CGF.Builder;
-
-  llvm::BasicBlock *AwaitBB = CGF.createBasicBlock(".await.work");
-  llvm::BasicBlock *SelectWorkersBB = CGF.createBasicBlock(".select.workers");
-  llvm::BasicBlock *ExecuteBB = CGF.createBasicBlock(".execute.parallel");
-  llvm::BasicBlock *TerminateBB = CGF.createBasicBlock(".terminate.parallel");
-  llvm::BasicBlock *BarrierBB = CGF.createBasicBlock(".barrier.parallel");
-  llvm::BasicBlock *ExitBB = CGF.createBasicBlock(".exit");
-
-  CGF.EmitBranch(AwaitBB);
-
-  // Workers wait for work from master.
-  CGF.EmitBlock(AwaitBB);
-  // Wait for parallel work
-  syncCTAThreads(CGF);
-
-  Address WorkFn =
-      CGF.CreateDefaultAlignTempAlloca(CGF.Int8PtrTy, /*Name=*/"work_fn");
-  Address ExecStatus =
-      CGF.CreateDefaultAlignTempAlloca(CGF.Int8Ty, /*Name=*/"exec_status");
-  CGF.InitTempAlloca(ExecStatus, Bld.getInt8(/*C=*/0));
-  CGF.InitTempAlloca(WorkFn, llvm::Constant::getNullValue(CGF.Int8PtrTy));
-
-  // TODO: Optimize runtime initialization and pass in correct value.
-  llvm::Value *Args[] = {WorkFn.getPointer()};
-  llvm::Value *Ret =
-      CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                              CGM.getModule(), OMPRTL___kmpc_kernel_parallel),
-                          Args);
-  Bld.CreateStore(Bld.CreateZExt(Ret, CGF.Int8Ty), ExecStatus);
-
-  // On termination condition (workid == 0), exit loop.
-  llvm::Value *WorkID = Bld.CreateLoad(WorkFn);
-  llvm::Value *ShouldTerminate = Bld.CreateIsNull(WorkID, "should_terminate");
-  Bld.CreateCondBr(ShouldTerminate, ExitBB, SelectWorkersBB);
-
-  // Activate requested workers.
-  CGF.EmitBlock(SelectWorkersBB);
-  llvm::Value *IsActive =
-      Bld.CreateIsNotNull(Bld.CreateLoad(ExecStatus), "is_active");
-  Bld.CreateCondBr(IsActive, ExecuteBB, BarrierBB);
-
-  // Signal start of parallel region.
-  CGF.EmitBlock(ExecuteBB);
-  // Skip initialization.
-  setLocThreadIdInsertPt(CGF, /*AtCurrentPoint=*/true);
-
-  // Process work items: outlined parallel functions.
-  for (llvm::Function *W : Work) {
-    // Try to match this outlined function.
-    llvm::Value *ID = Bld.CreatePointerBitCastOrAddrSpaceCast(W, CGM.Int8PtrTy);
-
-    llvm::Value *WorkFnMatch =
-        Bld.CreateICmpEQ(Bld.CreateLoad(WorkFn), ID, "work_match");
-
-    llvm::BasicBlock *ExecuteFNBB = CGF.createBasicBlock(".execute.fn");
-    llvm::BasicBlock *CheckNextBB = CGF.createBasicBlock(".check.next");
-    Bld.CreateCondBr(WorkFnMatch, ExecuteFNBB, CheckNextBB);
-
-    // Execute this outlined function.
-    CGF.EmitBlock(ExecuteFNBB);
-
-    // Insert call to work function via shared wrapper. The shared
-    // wrapper takes two arguments:
-    //   - the parallelism level;
-    //   - the thread ID;
-    emitCall(CGF, WST.Loc, W,
-             {Bld.getInt16(/*ParallelLevel=*/0), getThreadID(CGF, WST.Loc)});
-
-    // Go to end of parallel region.
-    CGF.EmitBranch(TerminateBB);
-
-    CGF.EmitBlock(CheckNextBB);
-  }
-  // Default case: call to outlined function through pointer if the target
-  // region makes a declare target call that may contain an orphaned parallel
-  // directive.
-  auto *ParallelFnTy =
-      llvm::FunctionType::get(CGM.VoidTy, {CGM.Int16Ty, CGM.Int32Ty},
-                              /*isVarArg=*/false);
-  llvm::Value *WorkFnCast =
-      Bld.CreateBitCast(WorkID, ParallelFnTy->getPointerTo());
-  // Insert call to work function via shared wrapper. The shared
-  // wrapper takes two arguments:
-  //   - the parallelism level;
-  //   - the thread ID;
-  emitCall(CGF, WST.Loc, {ParallelFnTy, WorkFnCast},
-           {Bld.getInt16(/*ParallelLevel=*/0), getThreadID(CGF, WST.Loc)});
-  // Go to end of parallel region.
-  CGF.EmitBranch(TerminateBB);
-
-  // Signal end of parallel region.
-  CGF.EmitBlock(TerminateBB);
-  CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
-                          CGM.getModule(), OMPRTL___kmpc_kernel_end_parallel),
-                      llvm::None);
-  CGF.EmitBranch(BarrierBB);
-
-  // All active and inactive workers wait at a barrier after parallel region.
-  CGF.EmitBlock(BarrierBB);
-  // Barrier after parallel region.
-  syncCTAThreads(CGF);
-  CGF.EmitBranch(AwaitBB);
-
-  // Exit target region.
-  CGF.EmitBlock(ExitBB);
-  // Skip initialization.
-  clearLocThreadIdInsertPt(CGF);
 }
 
 void CGOpenMPRuntimeGPU::createOffloadEntry(llvm::Constant *ID,
@@ -1427,20 +1125,25 @@ void CGOpenMPRuntimeGPU::createOffloadEntry(llvm::Constant *ID,
                                               llvm::GlobalValue::LinkageTypes) {
   // TODO: Add support for global variables on the device after declare target
   // support.
-  if (!isa<llvm::Function>(Addr))
+  llvm::Function *Fn = dyn_cast<llvm::Function>(Addr);
+  if (!Fn)
     return;
+
   llvm::Module &M = CGM.getModule();
   llvm::LLVMContext &Ctx = CGM.getLLVMContext();
 
-  // Get "nvvm.annotations" metadata node
+  // Get "nvvm.annotations" metadata node.
   llvm::NamedMDNode *MD = M.getOrInsertNamedMetadata("nvvm.annotations");
 
   llvm::Metadata *MDVals[] = {
-      llvm::ConstantAsMetadata::get(Addr), llvm::MDString::get(Ctx, "kernel"),
+      llvm::ConstantAsMetadata::get(Fn), llvm::MDString::get(Ctx, "kernel"),
       llvm::ConstantAsMetadata::get(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(Ctx), 1))};
-  // Append metadata to nvvm.annotations
+  // Append metadata to nvvm.annotations.
   MD->addOperand(llvm::MDNode::get(Ctx, MDVals));
+
+  // Add a function attribute for the kernel.
+  Fn->addFnAttr(llvm::Attribute::get(Ctx, "kernel"));
 }
 
 void CGOpenMPRuntimeGPU::emitTargetOutlinedFunction(
@@ -1497,7 +1200,18 @@ unsigned CGOpenMPRuntimeGPU::getDefaultLocationReserved2Flags() const {
 CGOpenMPRuntimeGPU::CGOpenMPRuntimeGPU(CodeGenModule &CGM)
     : CGOpenMPRuntime(CGM, "_", "$") {
   if (!CGM.getLangOpts().OpenMPIsDevice)
-    llvm_unreachable("OpenMP NVPTX can only handle device code.");
+    llvm_unreachable("OpenMP can only handle device code.");
+
+  llvm::OpenMPIRBuilder &OMPBuilder = getOMPBuilder();
+  if (CGM.getLangOpts().OpenMPTargetNewRuntime &&
+      !CGM.getLangOpts().OMPHostIRFile.empty()) {
+    OMPBuilder.createGlobalFlag(CGM.getLangOpts().OpenMPTargetDebug,
+                                "__omp_rtl_debug_kind");
+    OMPBuilder.createGlobalFlag(CGM.getLangOpts().OpenMPTeamSubscription,
+                                "__omp_rtl_assume_teams_oversubscription");
+    OMPBuilder.createGlobalFlag(CGM.getLangOpts().OpenMPThreadSubscription,
+                                "__omp_rtl_assume_threads_oversubscription");
+  }
 }
 
 void CGOpenMPRuntimeGPU::emitProcBindClause(CodeGenFunction &CGF,
@@ -1513,11 +1227,7 @@ void CGOpenMPRuntimeGPU::emitProcBindClause(CodeGenFunction &CGF,
 void CGOpenMPRuntimeGPU::emitNumThreadsClause(CodeGenFunction &CGF,
                                                 llvm::Value *NumThreads,
                                                 SourceLocation Loc) {
-  // Do nothing in case of SPMD mode and L0 parallel.
-  if (getExecutionMode() == CGOpenMPRuntimeGPU::EM_SPMD)
-    return;
-
-  CGOpenMPRuntime::emitNumThreadsClause(CGF, NumThreads, Loc);
+  // Nothing to do.
 }
 
 void CGOpenMPRuntimeGPU::emitNumTeamsClause(CodeGenFunction &CGF,
@@ -1610,7 +1320,7 @@ llvm::Function *CGOpenMPRuntimeGPU::emitTeamsOutlinedFunction(
   const RecordDecl *GlobalizedRD = nullptr;
   llvm::SmallVector<const ValueDecl *, 4> LastPrivatesReductions;
   llvm::SmallDenseMap<const ValueDecl *, const FieldDecl *> MappedDeclsFields;
-  unsigned WarpSize = CGM.getTarget().getGridValue(llvm::omp::GV_Warp_Size);
+  unsigned WarpSize = CGM.getTarget().getGridValue().GV_Warp_Size;
   // Globalize team reductions variable unconditionally in all modes.
   if (getExecutionMode() != CGOpenMPRuntimeGPU::EM_SPMD)
     getTeamsReductionVars(CGM.getContext(), D, LastPrivatesReductions);
@@ -1698,10 +1408,14 @@ void CGOpenMPRuntimeGPU::emitGenericVarsProlog(CodeGenFunction &CGF,
 
     // Allocate space for the variable to be globalized
     llvm::Value *AllocArgs[] = {CGF.getTypeSize(VD->getType())};
-    llvm::Instruction *VoidPtr =
+    llvm::CallBase *VoidPtr =
         CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
                                 CGM.getModule(), OMPRTL___kmpc_alloc_shared),
                             AllocArgs, VD->getName());
+    // FIXME: We should use the variables actual alignment as an argument.
+    VoidPtr->addRetAttr(llvm::Attribute::get(
+        CGM.getLLVMContext(), llvm::Attribute::Alignment,
+        CGM.getContext().getTargetInfo().getNewAlign() / 8));
 
     // Cast the void pointer and get the address of the globalized variable.
     llvm::PointerType *VarPtrTy = CGF.ConvertTypeForMem(VarTy)->getPointerTo();
@@ -1734,12 +1448,17 @@ void CGOpenMPRuntimeGPU::emitGenericVarsProlog(CodeGenFunction &CGF,
 
     // Allocate space for this VLA object to be globalized.
     llvm::Value *AllocArgs[] = {CGF.getTypeSize(VD->getType())};
-    llvm::Instruction *VoidPtr =
+    llvm::CallBase *VoidPtr =
         CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
                                 CGM.getModule(), OMPRTL___kmpc_alloc_shared),
                             AllocArgs, VD->getName());
+    VoidPtr->addRetAttr(
+        llvm::Attribute::get(CGM.getLLVMContext(), llvm::Attribute::Alignment,
+                             CGM.getContext().getTargetInfo().getNewAlign()));
 
-    I->getSecond().EscapedVariableLengthDeclsAddrs.emplace_back(VoidPtr);
+    I->getSecond().EscapedVariableLengthDeclsAddrs.emplace_back(
+        std::pair<llvm::Value *, llvm::Value *>(
+            {VoidPtr, CGF.getTypeSize(VD->getType())}));
     LValue Base = CGF.MakeAddrLValue(VoidPtr, VD->getType(),
                                      CGM.getContext().getDeclAlign(VD),
                                      AlignmentSource::Decl);
@@ -1758,19 +1477,22 @@ void CGOpenMPRuntimeGPU::emitGenericVarsEpilog(CodeGenFunction &CGF,
   const auto I = FunctionGlobalizedDecls.find(CGF.CurFn);
   if (I != FunctionGlobalizedDecls.end()) {
     // Deallocate the memory for each globalized VLA object
-    for (llvm::Value *Addr :
+    for (auto AddrSizePair :
          llvm::reverse(I->getSecond().EscapedVariableLengthDeclsAddrs)) {
       CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
                               CGM.getModule(), OMPRTL___kmpc_free_shared),
-                          Addr);
+                          {AddrSizePair.first, AddrSizePair.second});
     }
     // Deallocate the memory for each globalized value
     for (auto &Rec : llvm::reverse(I->getSecond().LocalVarData)) {
+      const auto *VD = cast<VarDecl>(Rec.first);
       I->getSecond().MappedParams->restore(CGF);
 
+      llvm::Value *FreeArgs[] = {Rec.second.GlobalizedVal,
+                                 CGF.getTypeSize(VD->getType())};
       CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
                               CGM.getModule(), OMPRTL___kmpc_free_shared),
-                          {Rec.second.GlobalizedVal});
+                          FreeArgs);
     }
   }
 }
@@ -1785,7 +1507,7 @@ void CGOpenMPRuntimeGPU::emitTeamsCall(CodeGenFunction &CGF,
 
   Address ZeroAddr = CGF.CreateDefaultAlignTempAlloca(CGF.Int32Ty,
                                                       /*Name=*/".zero.addr");
-  CGF.InitTempAlloca(ZeroAddr, CGF.Builder.getInt32(/*C*/ 0));
+  CGF.Builder.CreateStore(CGF.Builder.getInt32(/*C*/ 0), ZeroAddr);
   llvm::SmallVector<llvm::Value *, 16> OutlinedFnArgs;
   OutlinedFnArgs.push_back(emitThreadIDAddress(CGF, Loc).getPointer());
   OutlinedFnArgs.push_back(ZeroAddr.getPointer());
@@ -1797,20 +1519,20 @@ void CGOpenMPRuntimeGPU::emitParallelCall(CodeGenFunction &CGF,
                                           SourceLocation Loc,
                                           llvm::Function *OutlinedFn,
                                           ArrayRef<llvm::Value *> CapturedVars,
-                                          const Expr *IfCond) {
+                                          const Expr *IfCond,
+                                          llvm::Value *NumThreads) {
   if (!CGF.HaveInsertPoint())
     return;
 
-  auto &&ParallelGen = [this, Loc, OutlinedFn, CapturedVars,
-                        IfCond](CodeGenFunction &CGF, PrePostActionTy &Action) {
+  auto &&ParallelGen = [this, Loc, OutlinedFn, CapturedVars, IfCond,
+                        NumThreads](CodeGenFunction &CGF,
+                                    PrePostActionTy &Action) {
     CGBuilderTy &Bld = CGF.Builder;
+    llvm::Value *NumThreadsVal = NumThreads;
     llvm::Function *WFn = WrapperFunctionsMap[OutlinedFn];
     llvm::Value *ID = llvm::ConstantPointerNull::get(CGM.Int8PtrTy);
-    if (WFn) {
+    if (WFn)
       ID = Bld.CreateBitOrPointerCast(WFn, CGM.Int8PtrTy);
-      // Remember for post-processing in worker loop.
-      Work.emplace_back(WFn);
-    }
     llvm::Value *FnPtr = Bld.CreateBitOrPointerCast(OutlinedFn, CGM.Int8PtrTy);
 
     // Create a private scope that will globalize the arguments
@@ -1846,13 +1568,18 @@ void CGOpenMPRuntimeGPU::emitParallelCall(CodeGenFunction &CGF,
     else
       IfCondVal = llvm::ConstantInt::get(CGF.Int32Ty, 1);
 
-    assert(IfCondVal && "Expected a value");
+    if (!NumThreadsVal)
+      NumThreadsVal = llvm::ConstantInt::get(CGF.Int32Ty, -1);
+    else
+      NumThreadsVal = Bld.CreateZExtOrTrunc(NumThreadsVal, CGF.Int32Ty),
+
+      assert(IfCondVal && "Expected a value");
     llvm::Value *RTLoc = emitUpdateLocation(CGF, Loc);
     llvm::Value *Args[] = {
         RTLoc,
         getThreadID(CGF, Loc),
         IfCondVal,
-        llvm::ConstantInt::get(CGF.Int32Ty, -1),
+        NumThreadsVal,
         llvm::ConstantInt::get(CGF.Int32Ty, -1),
         FnPtr,
         ID,
@@ -2077,8 +1804,9 @@ static void shuffleAndStore(CodeGenFunction &CGF, Address SrcAddr,
       Ptr = Address(PhiSrc, Ptr.getAlignment());
       ElemPtr = Address(PhiDest, ElemPtr.getAlignment());
       llvm::Value *PtrDiff = Bld.CreatePtrDiff(
-          PtrEnd.getPointer(), Bld.CreatePointerBitCastOrAddrSpaceCast(
-                                   Ptr.getPointer(), CGF.VoidPtrTy));
+          CGF.Int8Ty, PtrEnd.getPointer(),
+          Bld.CreatePointerBitCastOrAddrSpaceCast(Ptr.getPointer(),
+                                                  CGF.VoidPtrTy));
       Bld.CreateCondBr(Bld.CreateICmpSGT(PtrDiff, Bld.getInt64(IntSize - 1)),
                        ThenBB, ExitBB);
       CGF.EmitBlock(ThenBB);
@@ -2389,7 +2117,7 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
       "__openmp_nvptx_data_transfer_temporary_storage";
   llvm::GlobalVariable *TransferMedium =
       M.getGlobalVariable(TransferMediumName);
-  unsigned WarpSize = CGF.getTarget().getGridValue(llvm::omp::GV_Warp_Size);
+  unsigned WarpSize = CGF.getTarget().getGridValue().GV_Warp_Size;
   if (!TransferMedium) {
     auto *Ty = llvm::ArrayType::get(CGM.Int32Ty, WarpSize);
     unsigned SharedAddressSpace = C.getTargetAddressSpace(LangAS::cuda_shared);
@@ -2476,10 +2204,8 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
       // elemptr = ((CopyType*)(elemptrptr)) + I
       Address ElemPtr = Address(ElemPtrPtr, Align);
       ElemPtr = Bld.CreateElementBitCast(ElemPtr, CopyType);
-      if (NumIters > 1) {
-        ElemPtr = Address(Bld.CreateGEP(ElemPtr.getPointer(), Cnt),
-                          ElemPtr.getAlignment());
-      }
+      if (NumIters > 1)
+        ElemPtr = Bld.CreateGEP(ElemPtr, Cnt);
 
       // Get pointer to location in transfer medium.
       // MediumPtr = &medium[warp_id]
@@ -2545,10 +2271,8 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
           TargetElemPtrPtr, /*Volatile=*/false, C.VoidPtrTy, Loc);
       Address TargetElemPtr = Address(TargetElemPtrVal, Align);
       TargetElemPtr = Bld.CreateElementBitCast(TargetElemPtr, CopyType);
-      if (NumIters > 1) {
-        TargetElemPtr = Address(Bld.CreateGEP(TargetElemPtr.getPointer(), Cnt),
-                                TargetElemPtr.getAlignment());
-      }
+      if (NumIters > 1)
+        TargetElemPtr = Bld.CreateGEP(TargetElemPtr, Cnt);
 
       // *TargetElemPtr = SrcMediumVal;
       llvm::Value *SrcMediumValue =
@@ -3646,10 +3370,6 @@ CGOpenMPRuntimeGPU::translateParameter(const FieldDecl *FD,
     if (Attr->getCaptureKind() == OMPC_map) {
       PointeeTy = CGM.getContext().getAddrSpaceQualType(PointeeTy,
                                                         LangAS::opencl_global);
-    } else if (Attr->getCaptureKind() == OMPC_firstprivate &&
-               PointeeTy.isConstant(CGM.getContext())) {
-      PointeeTy = CGM.getContext().getAddrSpaceQualType(PointeeTy,
-                                                        LangAS::opencl_generic);
     }
   }
   ArgType = CGM.getContext().getPointerType(PointeeTy);
@@ -3688,12 +3408,13 @@ CGOpenMPRuntimeGPU::getParameterAddress(CodeGenFunction &CGF,
       LocalAddr, /*Volatile=*/false, TargetTy, SourceLocation());
   // First cast to generic.
   TargetAddr = CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(
-      TargetAddr, TargetAddr->getType()->getPointerElementType()->getPointerTo(
-                      /*AddrSpace=*/0));
+      TargetAddr, llvm::PointerType::getWithSamePointeeType(
+          cast<llvm::PointerType>(TargetAddr->getType()), /*AddrSpace=*/0));
   // Cast from generic to native address space.
   TargetAddr = CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(
-      TargetAddr, TargetAddr->getType()->getPointerElementType()->getPointerTo(
-                      NativePointeeAddrSpace));
+      TargetAddr, llvm::PointerType::getWithSamePointeeType(
+          cast<llvm::PointerType>(TargetAddr->getType()),
+                                  NativePointeeAddrSpace));
   Address NativeParamAddr = CGF.CreateMemTemp(NativeParamType);
   CGF.EmitStoreOfScalar(TargetAddr, NativeParamAddr, /*Volatile=*/false,
                         NativeParamType);
@@ -3718,8 +3439,8 @@ void CGOpenMPRuntimeGPU::emitOutlinedFunctionCall(
       continue;
     }
     llvm::Value *TargetArg = CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(
-        NativeArg,
-        NativeArg->getType()->getPointerElementType()->getPointerTo());
+        NativeArg, llvm::PointerType::getWithSamePointeeType(
+            cast<llvm::PointerType>(NativeArg->getType()), /*AddrSpace*/ 0));
     TargetArgs.emplace_back(
         CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(TargetArg, TargetType));
   }
@@ -3778,7 +3499,7 @@ llvm::Function *CGOpenMPRuntimeGPU::createParallelDataSharingWrapper(
 
   Address ZeroAddr = CGF.CreateDefaultAlignTempAlloca(CGF.Int32Ty,
                                                       /*Name=*/".zero.addr");
-  CGF.InitTempAlloca(ZeroAddr, CGF.Builder.getInt32(/*C*/ 0));
+  CGF.Builder.CreateStore(CGF.Builder.getInt32(/*C*/ 0), ZeroAddr);
   // Get the array of arguments.
   SmallVector<llvm::Value *, 8> Args;
 
@@ -4084,10 +3805,6 @@ void CGOpenMPRuntimeGPU::adjustTargetSpecificDataForLambdas(
   }
 }
 
-unsigned CGOpenMPRuntimeGPU::getDefaultFirstprivateAddressSpace() const {
-  return CGM.getContext().getTargetAddressSpace(LangAS::cuda_constant);
-}
-
 bool CGOpenMPRuntimeGPU::hasAllocateAttributeForGlobalVar(const VarDecl *VD,
                                                             LangAS &AS) {
   if (!VD || !VD->hasAttr<OMPAllocateDeclAttr>())
@@ -4195,6 +3912,7 @@ void CGOpenMPRuntimeGPU::processRequiresDirective(
       case CudaArch::GFX1033:
       case CudaArch::GFX1034:
       case CudaArch::GFX1035:
+      case CudaArch::Generic:
       case CudaArch::UNUSED:
       case CudaArch::UNKNOWN:
         break;
@@ -4240,4 +3958,32 @@ void CGOpenMPRuntimeGPU::clear() {
                                                              CGM.VoidPtrTy));
   }
   CGOpenMPRuntime::clear();
+}
+
+llvm::Value *CGOpenMPRuntimeGPU::getGPUNumThreads(CodeGenFunction &CGF) {
+  CGBuilderTy &Bld = CGF.Builder;
+  llvm::Module *M = &CGF.CGM.getModule();
+  const char *LocSize = "__kmpc_get_hardware_num_threads_in_block";
+  llvm::Function *F = M->getFunction(LocSize);
+  if (!F) {
+    F = llvm::Function::Create(
+        llvm::FunctionType::get(CGF.Int32Ty, llvm::None, false),
+        llvm::GlobalVariable::ExternalLinkage, LocSize, &CGF.CGM.getModule());
+  }
+  return Bld.CreateCall(F, llvm::None, "nvptx_num_threads");
+}
+
+llvm::Value *CGOpenMPRuntimeGPU::getGPUThreadID(CodeGenFunction &CGF) {
+  ArrayRef<llvm::Value *> Args{};
+  return CGF.EmitRuntimeCall(
+      OMPBuilder.getOrCreateRuntimeFunction(
+          CGM.getModule(), OMPRTL___kmpc_get_hardware_thread_id_in_block),
+      Args);
+}
+
+llvm::Value *CGOpenMPRuntimeGPU::getGPUWarpSize(CodeGenFunction &CGF) {
+  ArrayRef<llvm::Value *> Args{};
+  return CGF.EmitRuntimeCall(OMPBuilder.getOrCreateRuntimeFunction(
+                                 CGM.getModule(), OMPRTL___kmpc_get_warp_size),
+                             Args);
 }

@@ -356,6 +356,46 @@ void TextNodeDumper::Visit(const GenericSelectionExpr::ConstAssociation &A) {
     OS << " selected";
 }
 
+void TextNodeDumper::Visit(const concepts::Requirement *R) {
+  if (!R) {
+    ColorScope Color(OS, ShowColors, NullColor);
+    OS << "<<<NULL>>> Requirement";
+    return;
+  }
+
+  {
+    ColorScope Color(OS, ShowColors, StmtColor);
+    switch (R->getKind()) {
+    case concepts::Requirement::RK_Type:
+      OS << "TypeRequirement";
+      break;
+    case concepts::Requirement::RK_Simple:
+      OS << "SimpleRequirement";
+      break;
+    case concepts::Requirement::RK_Compound:
+      OS << "CompoundRequirement";
+      break;
+    case concepts::Requirement::RK_Nested:
+      OS << "NestedRequirement";
+      break;
+    }
+  }
+
+  dumpPointer(R);
+
+  if (auto *ER = dyn_cast<concepts::ExprRequirement>(R)) {
+    if (ER->hasNoexceptRequirement())
+      OS << " noexcept";
+  }
+
+  if (R->isDependent())
+    OS << " dependent";
+  else
+    OS << (R->isSatisfied() ? " satisfied" : " unsatisfied");
+  if (R->containsUnexpandedParameterPack())
+    OS << " contains_unexpanded_pack";
+}
+
 static double GetApproxValue(const llvm::APFloat &F) {
   llvm::APFloat V = F;
   bool ignored;
@@ -908,6 +948,14 @@ void TextNodeDumper::VisitIfStmt(const IfStmt *Node) {
     OS << " has_var";
   if (Node->hasElseStorage())
     OS << " has_else";
+  if (Node->isConstexpr())
+    OS << " constexpr";
+  if (Node->isConsteval()) {
+    OS << " ";
+    if (Node->isNegatedConsteval())
+      OS << "!";
+    OS << "consteval";
+  }
 }
 
 void TextNodeDumper::VisitSwitchStmt(const SwitchStmt *Node) {
@@ -1366,6 +1414,12 @@ void TextNodeDumper::VisitConceptSpecializationExpr(
   dumpBareDeclRef(Node->getFoundDecl());
 }
 
+void TextNodeDumper::VisitRequiresExpr(
+    const RequiresExpr *Node) {
+  if (!Node->isValueDependent())
+    OS << (Node->isSatisfied() ? " satisfied" : " unsatisfied");
+}
+
 void TextNodeDumper::VisitRValueReferenceType(const ReferenceType *T) {
   if (T->isSpelledAsLValue())
     OS << " written as lvalue reference";
@@ -1478,6 +1532,10 @@ void TextNodeDumper::VisitFunctionProtoType(const FunctionProtoType *T) {
 
 void TextNodeDumper::VisitUnresolvedUsingType(const UnresolvedUsingType *T) {
   dumpDeclRef(T->getDecl());
+}
+
+void TextNodeDumper::VisitUsingType(const UsingType *T) {
+  dumpDeclRef(T->getFoundDecl());
 }
 
 void TextNodeDumper::VisitTypedefType(const TypedefType *T) {

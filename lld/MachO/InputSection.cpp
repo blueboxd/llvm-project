@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "InputSection.h"
+#include "ConcatOutputSection.h"
 #include "Config.h"
 #include "InputFiles.h"
 #include "OutputSegment.h"
@@ -25,10 +26,18 @@ using namespace llvm::support;
 using namespace lld;
 using namespace lld::macho;
 
-std::vector<InputSection *> macho::inputSections;
+// Verify ConcatInputSection's size on 64-bit builds. The size of std::vector
+// can differ based on STL debug levels (e.g. iterator debugging on MSVC's STL),
+// so account for that.
+static_assert(sizeof(void *) != 8 ||
+                  sizeof(ConcatInputSection) == sizeof(std::vector<Reloc>) + 96,
+              "Try to minimize ConcatInputSection's size, we create many "
+              "instances of it");
+
+std::vector<ConcatInputSection *> macho::inputSections;
 
 uint64_t InputSection::getFileSize() const {
-  return isZeroFill(flags) ? 0 : getSize();
+  return isZeroFill(getFlags()) ? 0 : getSize();
 }
 
 uint64_t InputSection::getVA(uint64_t off) const {
@@ -39,25 +48,19 @@ static uint64_t resolveSymbolVA(const Symbol *sym, uint8_t type) {
   const RelocAttrs &relocAttrs = target->getRelocAttrs(type);
   if (relocAttrs.hasAttr(RelocAttrBits::BRANCH))
     return sym->resolveBranchVA();
-  else if (relocAttrs.hasAttr(RelocAttrBits::GOT))
+  if (relocAttrs.hasAttr(RelocAttrBits::GOT))
     return sym->resolveGotVA();
-  else if (relocAttrs.hasAttr(RelocAttrBits::TLV))
+  if (relocAttrs.hasAttr(RelocAttrBits::TLV))
     return sym->resolveTlvVA();
   return sym->getVA();
 }
 
 // ICF needs to hash any section that might potentially be duplicated so
 // that it can match on content rather than identity.
-bool ConcatInputSection::isHashableForICF(bool isText) const {
-  if (shouldOmitFromOutput())
-    return false;
-  switch (sectionType(flags)) {
+bool ConcatInputSection::isHashableForICF() const {
+  switch (sectionType(getFlags())) {
   case S_REGULAR:
-    if (isText)
-      return !hasPersonality;
-    // One might hope that we could hash __TEXT,__const subsections to fold
-    // references to duplicated values, but alas, many tests fail.
-    return false;
+    return true;
   case S_CSTRING_LITERALS:
   case S_4BYTE_LITERALS:
   case S_8BYTE_LITERALS:
@@ -98,9 +101,34 @@ void ConcatInputSection::foldIdentical(ConcatInputSection *copy) {
   align = std::max(align, copy->align);
   copy->live = false;
   copy->wasCoalesced = true;
-  numRefs += copy->numRefs;
-  copy->numRefs = 0;
   copy->replacement = this;
+
+  // Merge the sorted vectors of symbols together.
+  auto it = symbols.begin();
+  for (auto copyIt = copy->symbols.begin(); copyIt != copy->symbols.end();) {
+    if (it == symbols.end()) {
+      symbols.push_back(*copyIt++);
+      it = symbols.end();
+    } else if ((*it)->value > (*copyIt)->value) {
+      std::swap(*it++, *copyIt);
+    } else {
+      ++it;
+    }
+  }
+  copy->symbols.clear();
+
+  // Remove duplicate compact unwind info for symbols at the same address.
+  if (symbols.empty())
+    return;
+  it = symbols.begin();
+  uint64_t v = (*it)->value;
+  for (++it; it != symbols.end(); ++it) {
+    Defined *d = *it;
+    if (d->value == v)
+      d->unwindEntry = nullptr;
+    else
+      v = d->value;
+  }
 }
 
 void ConcatInputSection::writeTo(uint8_t *buf) {
@@ -133,7 +161,7 @@ void ConcatInputSection::writeTo(uint8_t *buf) {
         target->relaxGotLoad(loc, r.type);
       referentVA = resolveSymbolVA(referentSym, r.type) + r.addend;
 
-      if (isThreadLocalVariables(flags)) {
+      if (isThreadLocalVariables(getFlags())) {
         // References from thread-local variable sections are treated as offsets
         // relative to the start of the thread-local data memory area, which
         // is initialized via copying all the TLV data sections (which are all
@@ -147,6 +175,18 @@ void ConcatInputSection::writeTo(uint8_t *buf) {
     }
     target->relocateOne(loc, r, referentVA, getVA() + r.offset);
   }
+}
+
+ConcatInputSection *macho::makeSyntheticInputSection(StringRef segName,
+                                                     StringRef sectName,
+                                                     uint32_t flags,
+                                                     ArrayRef<uint8_t> data,
+                                                     uint32_t align) {
+  Section &section =
+      *make<Section>(/*file=*/nullptr, segName, sectName, flags, /*addr=*/0);
+  auto isec = make<ConcatInputSection>(section, data, align);
+  section.subsections.push_back({0, isec});
+  return isec;
 }
 
 void CStringInputSection::splitIntoPieces() {
@@ -183,13 +223,11 @@ uint64_t CStringInputSection::getOffset(uint64_t off) const {
   return piece.outSecOff + addend;
 }
 
-WordLiteralInputSection::WordLiteralInputSection(StringRef segname,
-                                                 StringRef name,
-                                                 InputFile *file,
+WordLiteralInputSection::WordLiteralInputSection(const Section &section,
                                                  ArrayRef<uint8_t> data,
-                                                 uint32_t align, uint32_t flags)
-    : InputSection(WordLiteralKind, segname, name, file, data, align, flags) {
-  switch (sectionType(flags)) {
+                                                 uint32_t align)
+    : InputSection(WordLiteralKind, section, data, align) {
+  switch (sectionType(getFlags())) {
   case S_4BYTE_LITERALS:
     power2LiteralSize = 2;
     break;
@@ -208,36 +246,41 @@ WordLiteralInputSection::WordLiteralInputSection(StringRef segname,
 
 uint64_t WordLiteralInputSection::getOffset(uint64_t off) const {
   auto *osec = cast<WordLiteralSection>(parent);
-  const uint8_t *buf = data.data();
-  switch (sectionType(flags)) {
+  const uintptr_t buf = reinterpret_cast<uintptr_t>(data.data());
+  switch (sectionType(getFlags())) {
   case S_4BYTE_LITERALS:
-    return osec->getLiteral4Offset(buf + off);
+    return osec->getLiteral4Offset(buf + (off & ~3LLU)) | (off & 3);
   case S_8BYTE_LITERALS:
-    return osec->getLiteral8Offset(buf + off);
+    return osec->getLiteral8Offset(buf + (off & ~7LLU)) | (off & 7);
   case S_16BYTE_LITERALS:
-    return osec->getLiteral16Offset(buf + off);
+    return osec->getLiteral16Offset(buf + (off & ~15LLU)) | (off & 15);
   default:
     llvm_unreachable("invalid literal section type");
   }
 }
 
 bool macho::isCodeSection(const InputSection *isec) {
-  uint32_t type = sectionType(isec->flags);
+  uint32_t type = sectionType(isec->getFlags());
   if (type != S_REGULAR && type != S_COALESCED)
     return false;
 
-  uint32_t attr = isec->flags & SECTION_ATTRIBUTES_USR;
+  uint32_t attr = isec->getFlags() & SECTION_ATTRIBUTES_USR;
   if (attr == S_ATTR_PURE_INSTRUCTIONS)
     return true;
 
-  if (isec->segname == segment_names::text)
-    return StringSwitch<bool>(isec->name)
+  if (isec->getSegName() == segment_names::text)
+    return StringSwitch<bool>(isec->getName())
         .Cases(section_names::textCoalNt, section_names::staticInit, true)
         .Default(false);
 
   return false;
 }
 
+bool macho::isCfStringSection(const InputSection *isec) {
+  return isec->getName() == section_names::cfString &&
+         isec->getSegName() == segment_names::data;
+}
+
 std::string lld::toString(const InputSection *isec) {
-  return (toString(isec->file) + ":(" + isec->name + ")").str();
+  return (toString(isec->getFile()) + ":(" + isec->getName() + ")").str();
 }

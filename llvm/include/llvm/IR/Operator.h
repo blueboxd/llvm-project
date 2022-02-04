@@ -59,6 +59,10 @@ public:
   static bool classof(const Value *V) {
     return isa<Instruction>(V) || isa<ConstantExpr>(V);
   }
+
+  /// Return true if this operator has flags which may cause this operator
+  /// to evaluate to poison despite having non-poison inputs.
+  bool hasPoisonGeneratingFlags() const;
 };
 
 /// Utility class for integer operators which may exhibit overflow - Add, Sub,
@@ -243,7 +247,18 @@ public:
   void operator|=(const FastMathFlags &OtherFlags) {
     Flags |= OtherFlags.Flags;
   }
+  bool operator!=(const FastMathFlags &OtherFlags) const {
+    return Flags != OtherFlags.Flags;
+  }
+
+  /// Print fast-math flags to \p O.
+  void print(raw_ostream &O) const;
 };
+
+inline raw_ostream &operator<<(raw_ostream &O, FastMathFlags FMF) {
+  FMF.print(O);
+  return O;
+}
 
 /// Utility class for floating point operations which can have
 /// information about relaxed accuracy requirements attached to them.
@@ -488,6 +503,14 @@ public:
   inline op_iterator       idx_end()         { return op_end(); }
   inline const_op_iterator idx_end()   const { return op_end(); }
 
+  inline iterator_range<op_iterator> indices() {
+    return make_range(idx_begin(), idx_end());
+  }
+
+  inline iterator_range<const_op_iterator> indices() const {
+    return make_range(idx_begin(), idx_end());
+  }
+
   Value *getPointerOperand() {
     return getOperand(0);
   }
@@ -544,7 +567,7 @@ public:
   }
 
   unsigned countNonConstantIndices() const {
-    return count_if(make_range(idx_begin(), idx_end()), [](const Use& use) {
+    return count_if(indices(), [](const Use& use) {
         return !isa<ConstantInt>(*use);
       });
   }

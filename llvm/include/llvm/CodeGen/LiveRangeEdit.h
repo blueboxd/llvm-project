@@ -34,9 +34,7 @@ namespace llvm {
 
 class AAResults;
 class LiveIntervals;
-class MachineBlockFrequencyInfo;
 class MachineInstr;
-class MachineLoopInfo;
 class MachineOperand;
 class TargetInstrInfo;
 class TargetRegisterInfo;
@@ -68,7 +66,7 @@ public:
   };
 
 private:
-  LiveInterval *Parent;
+  const LiveInterval *const Parent;
   SmallVectorImpl<Register> &NewRegs;
   MachineRegisterInfo &MRI;
   LiveIntervals &LIS;
@@ -96,11 +94,6 @@ private:
 
   /// scanRemattable - Identify the Parent values that may rematerialize.
   void scanRemattable(AAResults *aa);
-
-  /// allUsesAvailableAt - Return true if all registers used by OrigMI at
-  /// OrigIdx are also available with the same value at UseIdx.
-  bool allUsesAvailableAt(const MachineInstr *OrigMI, SlotIndex OrigIdx,
-                          SlotIndex UseIdx) const;
 
   /// foldAsLoad - If LI has a single use and a single def that can be folded as
   /// a load, eliminate the register by folding the def into the use.
@@ -136,7 +129,7 @@ public:
   ///            be done.  This could be the case if called before Regalloc.
   /// @param deadRemats The collection of all the instructions defining an
   ///                   original reg and are dead after remat.
-  LiveRangeEdit(LiveInterval *parent, SmallVectorImpl<Register> &newRegs,
+  LiveRangeEdit(const LiveInterval *parent, SmallVectorImpl<Register> &newRegs,
                 MachineFunction &MF, LiveIntervals &lis, VirtRegMap *vrm,
                 Delegate *delegate = nullptr,
                 SmallPtrSet<MachineInstr *, 32> *deadRemats = nullptr)
@@ -148,7 +141,7 @@ public:
 
   ~LiveRangeEdit() override { MRI.resetDelegate(this); }
 
-  LiveInterval &getParent() const {
+  const LiveInterval &getParent() const {
     assert(Parent && "No parent LiveInterval");
     return *Parent;
   }
@@ -200,12 +193,17 @@ public:
 
   /// Remat - Information needed to rematerialize at a specific location.
   struct Remat {
-    VNInfo *ParentVNI;              // parent_'s value at the remat location.
+    const VNInfo *const ParentVNI;  // parent_'s value at the remat location.
     MachineInstr *OrigMI = nullptr; // Instruction defining OrigVNI. It contains
                                     // the real expr for remat.
 
-    explicit Remat(VNInfo *ParentVNI) : ParentVNI(ParentVNI) {}
+    explicit Remat(const VNInfo *ParentVNI) : ParentVNI(ParentVNI) {}
   };
+
+  /// allUsesAvailableAt - Return true if all registers used by OrigMI at
+  /// OrigIdx are also available with the same value at UseIdx.
+  bool allUsesAvailableAt(const MachineInstr *OrigMI, SlotIndex OrigIdx,
+                          SlotIndex UseIdx) const;
 
   /// canRematerializeAt - Determine if ParentVNI can be rematerialized at
   /// UseIdx. It is assumed that parent_.getVNINfoAt(UseIdx) == ParentVNI.

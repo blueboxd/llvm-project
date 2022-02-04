@@ -63,7 +63,7 @@ private:
                                  // provides the upper bound of
     // function addresses that are described
 
-    UnwindIndex() {}
+    UnwindIndex() = default;
 
     bool operator<(const CompactUnwindInfo::UnwindIndex &rhs) const {
       return function_offset < rhs.function_offset;
@@ -86,7 +86,7 @@ private:
                                            // valid for (start of the function)
     uint32_t valid_range_offset_end =
         0; // the offset of the start of the next function
-    FunctionInfo() : lsda_address(), personality_ptr_address() {}
+    FunctionInfo() {}
   };
 
   struct UnwindHeader {
@@ -96,7 +96,7 @@ private:
     uint32_t personality_array_offset = 0;
     uint32_t personality_array_count = 0;
 
-    UnwindHeader() {}
+    UnwindHeader() = default;
   };
 
   void ScanIndex(const lldb::ProcessSP &process_sp);

@@ -8,7 +8,7 @@
 %"b" = type { i8 }
 
 define hidden i64 @f1() align 2 {
-; IS__TUNIT____: Function Attrs: nofree nosync nounwind readnone willreturn
+; IS__TUNIT____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__TUNIT____-LABEL: define {{[^@]+}}@f1
 ; IS__TUNIT____-SAME: () #[[ATTR0:[0-9]+]] align 2 {
 ; IS__TUNIT____-NEXT:  entry:
@@ -18,6 +18,7 @@ define hidden i64 @f1() align 2 {
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@f1
 ; IS__CGSCC____-SAME: () #[[ATTR0:[0-9]+]] align 2 {
 ; IS__CGSCC____-NEXT:  entry:
+; IS__CGSCC____-NEXT:    [[REF_TMP:%.*]] = alloca [[A:%.*]], align 8
 ; IS__CGSCC____-NEXT:    ret i64 undef
 ;
 entry:
@@ -29,10 +30,10 @@ entry:
 define internal i64 @f2(%"a"* %this) align 2 {
 ; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@f2
-; IS__CGSCC____-SAME: (%a* noalias nocapture nofree noundef nonnull readnone align 8 dereferenceable(8) [[THIS:%.*]]) #[[ATTR0]] align 2 {
+; IS__CGSCC____-SAME: () #[[ATTR0]] align 2 {
 ; IS__CGSCC____-NEXT:  entry:
 ; IS__CGSCC____-NEXT:    [[THIS_ADDR:%.*]] = alloca %a*, align 8
-; IS__CGSCC____-NEXT:    store %a* [[THIS]], %a** [[THIS_ADDR]], align 8
+; IS__CGSCC____-NEXT:    [[THIS1:%.*]] = load %a*, %a** [[THIS_ADDR]], align 8
 ; IS__CGSCC____-NEXT:    ret i64 undef
 ;
 entry:
@@ -47,10 +48,10 @@ entry:
 define internal void @f3(%"b"* %this) align 2 {
 ; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@f3
-; IS__CGSCC____-SAME: (%b* noalias nocapture nofree readnone [[THIS:%.*]]) #[[ATTR0]] align 2 {
+; IS__CGSCC____-SAME: () #[[ATTR0]] align 2 {
 ; IS__CGSCC____-NEXT:  entry:
 ; IS__CGSCC____-NEXT:    [[THIS_ADDR:%.*]] = alloca %b*, align 8
-; IS__CGSCC____-NEXT:    store %b* [[THIS]], %b** [[THIS_ADDR]], align 8
+; IS__CGSCC____-NEXT:    [[THIS1:%.*]] = load %b*, %b** [[THIS_ADDR]], align 8
 ; IS__CGSCC____-NEXT:    ret void
 ;
 entry:
@@ -64,10 +65,10 @@ entry:
 define internal i1 @f4(%"b"* %this) align 2 {
 ; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@f4
-; IS__CGSCC____-SAME: (%b* noalias nocapture nofree readnone [[THIS:%.*]]) #[[ATTR0]] align 2 {
+; IS__CGSCC____-SAME: () #[[ATTR0]] align 2 {
 ; IS__CGSCC____-NEXT:  entry:
 ; IS__CGSCC____-NEXT:    [[THIS_ADDR:%.*]] = alloca %b*, align 8
-; IS__CGSCC____-NEXT:    store %b* [[THIS]], %b** [[THIS_ADDR]], align 8
+; IS__CGSCC____-NEXT:    [[THIS1:%.*]] = load %b*, %b** [[THIS_ADDR]], align 8
 ; IS__CGSCC____-NEXT:    ret i1 undef
 ;
 entry:
@@ -81,10 +82,8 @@ entry:
 define internal %"a"* @f5(%"b"* %this) align 2 {
 ; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@f5
-; IS__CGSCC____-SAME: (%b* noalias nocapture nofree readnone [[THIS:%.*]]) #[[ATTR0]] align 2 {
+; IS__CGSCC____-SAME: () #[[ATTR0]] align 2 {
 ; IS__CGSCC____-NEXT:  entry:
-; IS__CGSCC____-NEXT:    [[THIS_ADDR:%.*]] = alloca %b*, align 8
-; IS__CGSCC____-NEXT:    store %b* [[THIS]], %b** [[THIS_ADDR]], align 8
 ; IS__CGSCC____-NEXT:    ret %a* undef
 ;
 entry:
@@ -95,7 +94,5 @@ entry:
   ret %"a"* %0
 }
 ;.
-; IS__TUNIT____: attributes #[[ATTR0]] = { nofree nosync nounwind readnone willreturn }
-;.
-; IS__CGSCC____: attributes #[[ATTR0]] = { nofree norecurse nosync nounwind readnone willreturn }
+; CHECK: attributes #[[ATTR0:[0-9]+]] = { nofree norecurse nosync nounwind readnone willreturn }
 ;.

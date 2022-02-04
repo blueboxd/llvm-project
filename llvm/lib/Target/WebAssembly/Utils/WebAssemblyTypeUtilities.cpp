@@ -14,6 +14,10 @@
 #include "WebAssemblyTypeUtilities.h"
 #include "llvm/ADT/StringSwitch.h"
 
+// Get register classes enum.
+#define GET_REGINFO_ENUM
+#include "WebAssemblyGenRegisterInfo.inc"
+
 using namespace llvm;
 
 Optional<wasm::ValType> WebAssembly::parseType(StringRef Type) {
@@ -35,13 +39,6 @@ Optional<wasm::ValType> WebAssembly::parseType(StringRef Type) {
   if (Type == "externref")
     return wasm::ValType::EXTERNREF;
   return Optional<wasm::ValType>();
-}
-
-WebAssembly::HeapType WebAssembly::parseHeapType(StringRef Type) {
-  return StringSwitch<WebAssembly::HeapType>(Type)
-      .Case("extern", WebAssembly::HeapType::Externref)
-      .Case("func", WebAssembly::HeapType::Funcref)
-      .Default(WebAssembly::HeapType::Invalid);
 }
 
 WebAssembly::BlockType WebAssembly::parseBlockType(StringRef Type) {
@@ -147,5 +144,64 @@ wasm::ValType WebAssembly::toValType(MVT Type) {
     return wasm::ValType::EXTERNREF;
   default:
     llvm_unreachable("unexpected type");
+  }
+}
+
+wasm::ValType WebAssembly::regClassToValType(unsigned RC) {
+  switch (RC) {
+  case WebAssembly::I32RegClassID:
+    return wasm::ValType::I32;
+  case WebAssembly::I64RegClassID:
+    return wasm::ValType::I64;
+  case WebAssembly::F32RegClassID:
+    return wasm::ValType::F32;
+  case WebAssembly::F64RegClassID:
+    return wasm::ValType::F64;
+  case WebAssembly::V128RegClassID:
+    return wasm::ValType::V128;
+  case WebAssembly::FUNCREFRegClassID:
+    return wasm::ValType::FUNCREF;
+  case WebAssembly::EXTERNREFRegClassID:
+    return wasm::ValType::EXTERNREF;
+  default:
+    llvm_unreachable("unexpected type");
+  }
+}
+
+void WebAssembly::wasmSymbolSetType(MCSymbolWasm *Sym, const Type *GlobalVT,
+                                    const SmallVector<MVT, 1> &VTs) {
+  assert(!Sym->getType());
+
+  // Tables are represented as Arrays in LLVM IR therefore
+  // they reach this point as aggregate Array types with an element type
+  // that is a reference type.
+  wasm::ValType Type;
+  bool IsTable = false;
+  if (GlobalVT->isArrayTy() &&
+      WebAssembly::isRefType(GlobalVT->getArrayElementType())) {
+    MVT VT;
+    IsTable = true;
+    switch (GlobalVT->getArrayElementType()->getPointerAddressSpace()) {
+    case WebAssembly::WasmAddressSpace::WASM_ADDRESS_SPACE_FUNCREF:
+      VT = MVT::funcref;
+      break;
+    case WebAssembly::WasmAddressSpace::WASM_ADDRESS_SPACE_EXTERNREF:
+      VT = MVT::externref;
+      break;
+    default:
+      report_fatal_error("unhandled address space type");
+    }
+    Type = WebAssembly::toValType(VT);
+  } else if (VTs.size() == 1) {
+    Type = WebAssembly::toValType(VTs[0]);
+  } else
+    report_fatal_error("Aggregate globals not yet implemented");
+
+  if (IsTable) {
+    Sym->setType(wasm::WASM_SYMBOL_TYPE_TABLE);
+    Sym->setTableType(Type);
+  } else {
+    Sym->setType(wasm::WASM_SYMBOL_TYPE_GLOBAL);
+    Sym->setGlobalType(wasm::WasmGlobalType{uint8_t(Type), /*Mutable=*/true});
   }
 }

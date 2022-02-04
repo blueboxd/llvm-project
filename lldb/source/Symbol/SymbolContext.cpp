@@ -11,7 +11,6 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Host/Host.h"
-#include "lldb/Host/StringConvert.h"
 #include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -20,6 +19,7 @@
 #include "lldb/Symbol/SymbolVendor.h"
 #include "lldb/Symbol/Variable.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/StreamString.h"
 
@@ -51,7 +51,7 @@ SymbolContext::SymbolContext(SymbolContextScope *sc_scope)
   sc_scope->CalculateSymbolContext(this);
 }
 
-SymbolContext::~SymbolContext() {}
+SymbolContext::~SymbolContext() = default;
 
 void SymbolContext::Clear(bool clear_target) {
   if (clear_target)
@@ -478,7 +478,7 @@ bool SymbolContext::GetParentOfInlinedScope(const Address &curr_frame_pc,
             curr_inlined_block_inlined_info->GetCallSite().GetColumn();
         return true;
       } else {
-        Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_SYMBOLS));
+        Log *log = GetLog(LLDBLog::Symbols);
 
         if (log) {
           LLDB_LOGF(
@@ -926,7 +926,7 @@ SymbolContextSpecifier::SymbolContextSpecifier(const TargetSP &target_sp)
       m_start_line(0), m_end_line(0), m_function_spec(), m_class_name(),
       m_address_range_up(), m_type(eNothingSpecified) {}
 
-SymbolContextSpecifier::~SymbolContextSpecifier() {}
+SymbolContextSpecifier::~SymbolContextSpecifier() = default;
 
 bool SymbolContextSpecifier::AddLineSpecification(uint32_t line_no,
                                                   SpecificationType type) {
@@ -977,13 +977,11 @@ bool SymbolContextSpecifier::AddSpecification(const char *spec_string,
     m_type |= eFileSpecified;
     break;
   case eLineStartSpecified:
-    m_start_line = StringConvert::ToSInt32(spec_string, 0, 0, &return_value);
-    if (return_value)
+    if ((return_value = llvm::to_integer(spec_string, m_start_line)))
       m_type |= eLineStartSpecified;
     break;
   case eLineEndSpecified:
-    m_end_line = StringConvert::ToSInt32(spec_string, 0, 0, &return_value);
-    if (return_value)
+    if ((return_value = llvm::to_integer(spec_string, m_end_line)))
       m_type |= eLineEndSpecified;
     break;
   case eFunctionSpecified:
@@ -1186,7 +1184,7 @@ void SymbolContextSpecifier::GetDescription(
 
 SymbolContextList::SymbolContextList() : m_symbol_contexts() {}
 
-SymbolContextList::~SymbolContextList() {}
+SymbolContextList::~SymbolContextList() = default;
 
 void SymbolContextList::Append(const SymbolContext &sc) {
   m_symbol_contexts.push_back(sc);

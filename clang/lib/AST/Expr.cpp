@@ -202,6 +202,23 @@ bool Expr::isKnownToHaveBooleanValue(bool Semantic) const {
   return false;
 }
 
+const ValueDecl *
+Expr::getAsBuiltinConstantDeclRef(const ASTContext &Context) const {
+  Expr::EvalResult Eval;
+
+  if (EvaluateAsConstantExpr(Eval, Context)) {
+    APValue &Value = Eval.Val;
+
+    if (Value.isMemberPointer())
+      return Value.getMemberPointerDecl();
+
+    if (Value.isLValue() && Value.getLValueOffset().isZero())
+      return Value.getLValueBase().dyn_cast<const ValueDecl *>();
+  }
+
+  return nullptr;
+}
+
 // Amusing macro metaprogramming hack: check whether a class provides
 // a more specific implementation of getExprLoc().
 //
@@ -490,6 +507,8 @@ DeclRefExpr *DeclRefExpr::CreateEmpty(const ASTContext &Context,
 
 void DeclRefExpr::setDecl(ValueDecl *NewD) {
   D = NewD;
+  if (getType()->isUndeducedType())
+    setType(NewD->getType());
   setDependence(computeDependence(this, NewD->getASTContext()));
 }
 
@@ -543,20 +562,11 @@ std::string SYCLUniqueStableNameExpr::ComputeName(ASTContext &Context,
                                                   QualType Ty) {
   auto MangleCallback = [](ASTContext &Ctx,
                            const NamedDecl *ND) -> llvm::Optional<unsigned> {
-    // This replaces the 'lambda number' in the mangling with a unique number
-    // based on its order in the declaration.  To provide some level of visual
-    // notability (actual uniqueness from normal lambdas isn't necessary, as
-    // these are used differently), we add 10,000 to the number.
-    // For example:
-    // _ZTSZ3foovEUlvE10005_
-    // Demangles to: typeinfo name for foo()::'lambda10005'()
-    // Note that the mangler subtracts 2, since with normal lambdas the lambda
-    // mangling number '0' is an anonymous struct mangle, and '1' is omitted.
-    // So 10,002 results in the first number being 10,000.
-    if (Ctx.IsSYCLKernelNamingDecl(ND))
-      return 10'002 + Ctx.GetSYCLKernelNamingIndex(ND);
+    if (const auto *RD = dyn_cast<CXXRecordDecl>(ND))
+      return RD->getDeviceLambdaManglingNumber();
     return llvm::None;
   };
+
   std::unique_ptr<MangleContext> Ctx{ItaniumMangleContext::create(
       Context, Context.getDiagnostics(), MangleCallback)};
 
@@ -760,19 +770,18 @@ std::string PredefinedExpr::ComputeName(IdentKind IK, const Decl *CurrentDecl) {
 
     std::string TemplateParams;
     llvm::raw_string_ostream TOut(TemplateParams);
-    for (SpecsTy::reverse_iterator I = Specs.rbegin(), E = Specs.rend();
-         I != E; ++I) {
-      const TemplateParameterList *Params
-                  = (*I)->getSpecializedTemplate()->getTemplateParameters();
-      const TemplateArgumentList &Args = (*I)->getTemplateArgs();
+    for (const ClassTemplateSpecializationDecl *D : llvm::reverse(Specs)) {
+      const TemplateParameterList *Params =
+          D->getSpecializedTemplate()->getTemplateParameters();
+      const TemplateArgumentList &Args = D->getTemplateArgs();
       assert(Params->size() == Args.size());
       for (unsigned i = 0, numParams = Params->size(); i != numParams; ++i) {
         StringRef Param = Params->getParam(i)->getName();
         if (Param.empty()) continue;
         TOut << Param << " = ";
-        Args.get(i).print(
-            Policy, TOut,
-            TemplateParameterList::shouldIncludeTypeForArgument(Params, i));
+        Args.get(i).print(Policy, TOut,
+                          TemplateParameterList::shouldIncludeTypeForArgument(
+                              Policy, Params, i));
         TOut << ", ";
       }
     }
@@ -1272,7 +1281,7 @@ StringLiteral::getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
     StringOffset = *StartTokenByteOffset;
     ByteNo -= StringOffset;
   }
-  while (1) {
+  while (true) {
     assert(TokNo < getNumConcatenated() && "Invalid byte number!");
     SourceLocation StrTokLoc = getStrTokenLoc(TokNo);
 
@@ -1398,7 +1407,7 @@ CallExpr::CallExpr(StmtClass SC, Expr *Fn, ArrayRef<Expr *> PreArgs,
   for (unsigned I = Args.size(); I != NumArgs; ++I)
     setArg(I, nullptr);
 
-  setDependence(computeDependence(this, PreArgs));
+  this->computeDependence();
 
   CallExprBits.HasFPFeatures = FPFeatures.requiresTrailingStorage();
   if (hasStoredFPFeatures())
@@ -1722,8 +1731,10 @@ MemberExpr *MemberExpr::CreateEmpty(const ASTContext &Context,
   return new (Mem) MemberExpr(EmptyShell());
 }
 
-void MemberExpr::setMemberDecl(ValueDecl *D) {
-  MemberDecl = D;
+void MemberExpr::setMemberDecl(ValueDecl *NewD) {
+  MemberDecl = NewD;
+  if (getType()->isUndeducedType())
+    setType(NewD->getType());
   setDependence(computeDependence(this));
 }
 
@@ -1913,6 +1924,7 @@ Expr *CastExpr::getSubExprAsWritten() {
       SubExpr =
         skipImplicitTemporary(cast<CXXConstructExpr>(SubExpr->IgnoreImplicit())->getArg(0));
     else if (E->getCastKind() == CK_UserDefinedConversion) {
+      SubExpr = SubExpr->IgnoreImplicit();
       assert((isa<CXXMemberCallExpr>(SubExpr) ||
               isa<BlockExpr>(SubExpr)) &&
              "Unexpected SubExpr for CK_UserDefinedConversion.");
@@ -2228,8 +2240,11 @@ APValue SourceLocExpr::EvaluateInContext(const ASTContext &Ctx,
   };
 
   switch (getIdentKind()) {
-  case SourceLocExpr::File:
-    return MakeStringLiteral(PLoc.getFilename());
+  case SourceLocExpr::File: {
+    SmallString<256> Path(PLoc.getFilename());
+    Ctx.getLangOpts().remapPathPrefix(Path);
+    return MakeStringLiteral(Path);
+  }
   case SourceLocExpr::Function: {
     const Decl *CurDecl = dyn_cast_or_null<Decl>(Context);
     return MakeStringLiteral(
@@ -2300,7 +2315,7 @@ bool InitListExpr::isStringLiteralInit() const {
   const Expr *Init = getInit(0);
   if (!Init)
     return false;
-  Init = Init->IgnoreParens();
+  Init = Init->IgnoreParenImpCasts();
   return isa<StringLiteral>(Init) || isa<ObjCEncodeExpr>(Init);
 }
 
@@ -2362,10 +2377,8 @@ SourceLocation InitListExpr::getEndLoc() const {
   SourceLocation End = RBraceLoc;
   if (End.isInvalid()) {
     // Find the first non-null initializer from the end.
-    for (InitExprsTy::const_reverse_iterator I = InitExprs.rbegin(),
-         E = InitExprs.rend();
-         I != E; ++I) {
-      if (Stmt *S = *I) {
+    for (Stmt *S : llvm::reverse(InitExprs)) {
+      if (S) {
         End = S->getEndLoc();
         break;
       }
@@ -2401,7 +2414,7 @@ bool Expr::isReadIfDiscardedInCPlusPlus11() const {
   // In C++11, discarded-value expressions of a certain form are special,
   // according to [expr]p10:
   //   The lvalue-to-rvalue conversion (4.1) is applied only if the
-  //   expression is an lvalue of volatile-qualified type and it has
+  //   expression is a glvalue of volatile-qualified type and it has
   //   one of the following forms:
   if (!isGLValue() || !getType().isVolatileQualified())
     return false;
@@ -3771,11 +3784,8 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
         // has non-default address space it is not treated as nullptr.
         // (__generic void*)0 in OpenCL 2.0 should not be treated as nullptr
         // since it cannot be assigned to a pointer to constant address space.
-        if ((Ctx.getLangOpts().OpenCLVersion >= 200 &&
-             Pointee.getAddressSpace() == LangAS::opencl_generic) ||
-            (Ctx.getLangOpts().OpenCL &&
-             Ctx.getLangOpts().OpenCLVersion < 200 &&
-             Pointee.getAddressSpace() == LangAS::opencl_private))
+        if (Ctx.getLangOpts().OpenCL &&
+            Pointee.getAddressSpace() == Ctx.getDefaultOpenCLPointeeAddrSpace())
           Qs.removeAddressSpace();
 
         if (Pointee->isVoidType() && Qs.empty() && // to void*
@@ -3869,8 +3879,7 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
 const ObjCPropertyRefExpr *Expr::getObjCProperty() const {
   const Expr *E = this;
   while (true) {
-    assert((E->getValueKind() == VK_LValue &&
-            E->getObjectKind() == OK_ObjCProperty) &&
+    assert((E->isLValue() && E->getObjectKind() == OK_ObjCProperty) &&
            "expression is not a property reference");
     E = E->IgnoreParenCasts();
     if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
@@ -3909,7 +3918,7 @@ FieldDecl *Expr::getSourceBitField() {
 
   while (ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(E)) {
     if (ICE->getCastKind() == CK_LValueToRValue ||
-        (ICE->getValueKind() != VK_PRValue && ICE->getCastKind() == CK_NoOp))
+        (ICE->isGLValue() && ICE->getCastKind() == CK_NoOp))
       E = ICE->getSubExpr()->IgnoreParens();
     else
       break;
@@ -3956,7 +3965,7 @@ bool Expr::refersToVectorElement() const {
   const Expr *E = this->IgnoreParens();
 
   while (const ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(E)) {
-    if (ICE->getValueKind() != VK_PRValue && ICE->getCastKind() == CK_NoOp)
+    if (ICE->isGLValue() && ICE->getCastKind() == CK_NoOp)
       E = ICE->getSubExpr()->IgnoreParens();
     else
       break;
@@ -4121,7 +4130,7 @@ bool ExtVectorElementExpr::containsDuplicateElements() const {
     Comp = Comp.substr(1);
 
   for (unsigned i = 0, e = Comp.size(); i != e; ++i)
-    if (Comp.substr(i + 1).find(Comp[i]) != StringRef::npos)
+    if (Comp.substr(i + 1).contains(Comp[i]))
         return true;
 
   return false;
@@ -4689,6 +4698,7 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
     return 2;
 
   case AO__opencl_atomic_load:
+  case AO__hip_atomic_load:
   case AO__c11_atomic_store:
   case AO__c11_atomic_exchange:
   case AO__atomic_load:
@@ -4700,6 +4710,7 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__c11_atomic_fetch_and:
   case AO__c11_atomic_fetch_or:
   case AO__c11_atomic_fetch_xor:
+  case AO__c11_atomic_fetch_nand:
   case AO__c11_atomic_fetch_max:
   case AO__c11_atomic_fetch_min:
   case AO__atomic_fetch_add:
@@ -4720,7 +4731,15 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__atomic_fetch_max:
     return 3;
 
+  case AO__hip_atomic_exchange:
+  case AO__hip_atomic_fetch_add:
+  case AO__hip_atomic_fetch_and:
+  case AO__hip_atomic_fetch_or:
+  case AO__hip_atomic_fetch_xor:
+  case AO__hip_atomic_fetch_min:
+  case AO__hip_atomic_fetch_max:
   case AO__opencl_atomic_store:
+  case AO__hip_atomic_store:
   case AO__opencl_atomic_exchange:
   case AO__opencl_atomic_fetch_add:
   case AO__opencl_atomic_fetch_sub:
@@ -4735,9 +4754,10 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__c11_atomic_compare_exchange_strong:
   case AO__c11_atomic_compare_exchange_weak:
     return 5;
-
+  case AO__hip_atomic_compare_exchange_strong:
   case AO__opencl_atomic_compare_exchange_strong:
   case AO__opencl_atomic_compare_exchange_weak:
+  case AO__hip_atomic_compare_exchange_weak:
   case AO__atomic_compare_exchange:
   case AO__atomic_compare_exchange_n:
     return 6;

@@ -140,7 +140,7 @@ ObjectContainerBSDArchive::Archive::Archive(const lldb_private::ArchSpec &arch,
     : m_arch(arch), m_modification_time(time), m_file_offset(file_offset),
       m_objects(), m_data(data) {}
 
-ObjectContainerBSDArchive::Archive::~Archive() {}
+ObjectContainerBSDArchive::Archive::~Archive() = default;
 
 size_t ObjectContainerBSDArchive::Archive::ParseObjects() {
   DataExtractor &data = m_data;
@@ -274,15 +274,6 @@ void ObjectContainerBSDArchive::Terminate() {
   PluginManager::UnregisterPlugin(CreateInstance);
 }
 
-lldb_private::ConstString ObjectContainerBSDArchive::GetPluginNameStatic() {
-  static ConstString g_name("bsd-archive");
-  return g_name;
-}
-
-const char *ObjectContainerBSDArchive::GetPluginDescriptionStatic() {
-  return "BSD Archive object container reader.";
-}
-
 ObjectContainer *ObjectContainerBSDArchive::CreateInstance(
     const lldb::ModuleSP &module_sp, DataBufferSP &data_sp,
     lldb::offset_t data_offset, const FileSpec *file,
@@ -373,7 +364,7 @@ void ObjectContainerBSDArchive::SetArchive(Archive::shared_ptr &archive_sp) {
   m_archive_sp = archive_sp;
 }
 
-ObjectContainerBSDArchive::~ObjectContainerBSDArchive() {}
+ObjectContainerBSDArchive::~ObjectContainerBSDArchive() = default;
 
 bool ObjectContainerBSDArchive::ParseHeader() {
   if (m_archive_sp.get() == nullptr) {
@@ -432,13 +423,6 @@ ObjectFileSP ObjectContainerBSDArchive::GetObjectFile(const FileSpec *file) {
   }
   return ObjectFileSP();
 }
-
-// PluginInterface protocol
-lldb_private::ConstString ObjectContainerBSDArchive::GetPluginName() {
-  return GetPluginNameStatic();
-}
-
-uint32_t ObjectContainerBSDArchive::GetPluginVersion() { return 1; }
 
 size_t ObjectContainerBSDArchive::GetModuleSpecifications(
     const lldb_private::FileSpec &file, lldb::DataBufferSP &data_sp,

@@ -18,7 +18,6 @@ def p4 : PtrValueType<i64, 4>;
 def p5 : PtrValueType<i32, 5>;
 def p6 : PtrValueType<i32, 6>;
 
-
 class BoolToList<bit Value> {
   list<int> ret = !if(Value, [1]<int>, []<int>);
 }
@@ -416,7 +415,7 @@ def FeatureDPP : SubtargetFeature<"dpp",
   "Support DPP (Data Parallel Primitives) extension"
 >;
 
-// DPP8 allows arbitrary cross-lane swizzling withing groups of 8 lanes.
+// DPP8 allows arbitrary cross-lane swizzling within groups of 8 lanes.
 def FeatureDPP8 : SubtargetFeature<"dpp8",
   "HasDPP8",
   "true",
@@ -611,12 +610,6 @@ def FeatureDsSrc2Insts : SubtargetFeature<"ds-src2-insts",
   "Has ds_*_src2 instructions"
 >;
 
-def FeatureRegisterBanking : SubtargetFeature<"register-banking",
-  "HasRegisterBanking",
-  "true",
-  "Has register banking"
->;
-
 def FeatureVOP3Literal : SubtargetFeature<"vop3-literal",
   "HasVOP3Literal",
   "true",
@@ -628,6 +621,16 @@ def FeatureNoDataDepHazard : SubtargetFeature<"no-data-dep-hazard",
   "true",
   "Does not need SW waitstates"
 >;
+
+class SubtargetFeatureNSAMaxSize <int Value> : SubtargetFeature <
+  "nsa-max-size-"#Value,
+  "NSAMaxSize",
+  !cast<string>(Value),
+  "The maximum non-sequential address size in VGPRs."
+>;
+
+def FeatureNSAMaxSize5 : SubtargetFeatureNSAMaxSize<5>;
+def FeatureNSAMaxSize13 : SubtargetFeatureNSAMaxSize<13>;
 
 //===------------------------------------------------------------===//
 // Subtarget Features (options and debugging)
@@ -817,7 +820,7 @@ def FeatureGFX10 : GCNSubtargetFeatureGeneration<"GFX10",
    FeatureSDWA, FeatureSDWAOmod, FeatureSDWAScalar, FeatureSDWASdst,
    FeatureFlatInstOffsets, FeatureFlatGlobalInsts, FeatureFlatScratchInsts,
    FeatureAddNoCarryInsts, FeatureFmaMixInsts, FeatureGFX8Insts,
-   FeatureNoSdstCMPX, FeatureVscnt, FeatureRegisterBanking,
+   FeatureNoSdstCMPX, FeatureVscnt,
    FeatureVOP3Literal, FeatureDPP8, FeatureExtendedImageInsts,
    FeatureNoDataDepHazard, FeaturePkFmacF16Inst,
    FeatureGFX10A16, FeatureSMemTimeInst, FeatureFastDenormalF32, FeatureG16,
@@ -1031,6 +1034,7 @@ def FeatureISAVersion10_1_0 : FeatureSet<
      FeatureLDSBankCount32,
      FeatureDLInsts,
      FeatureNSAEncoding,
+     FeatureNSAMaxSize5,
      FeatureWavefrontSize32,
      FeatureScalarStores,
      FeatureScalarAtomics,
@@ -1052,6 +1056,7 @@ def FeatureISAVersion10_1_1 : FeatureSet<
      FeatureDot6Insts,
      FeatureDot7Insts,
      FeatureNSAEncoding,
+     FeatureNSAMaxSize5,
      FeatureWavefrontSize32,
      FeatureScalarStores,
      FeatureScalarAtomics,
@@ -1073,6 +1078,7 @@ def FeatureISAVersion10_1_2 : FeatureSet<
      FeatureDot6Insts,
      FeatureDot7Insts,
      FeatureNSAEncoding,
+     FeatureNSAMaxSize5,
      FeatureWavefrontSize32,
      FeatureScalarStores,
      FeatureScalarAtomics,
@@ -1090,6 +1096,7 @@ def FeatureISAVersion10_1_3 : FeatureSet<
      FeatureLDSBankCount32,
      FeatureDLInsts,
      FeatureNSAEncoding,
+     FeatureNSAMaxSize5,
      FeatureWavefrontSize32,
      FeatureScalarStores,
      FeatureScalarAtomics,
@@ -1113,6 +1120,7 @@ def FeatureISAVersion10_3_0 : FeatureSet<
    FeatureDot6Insts,
    FeatureDot7Insts,
    FeatureNSAEncoding,
+   FeatureNSAMaxSize13,
    FeatureWavefrontSize32,
    FeatureShaderCyclesRegister]>;
 
@@ -1336,7 +1344,7 @@ def NotLDSRequiresM0Init : Predicate<"!Subtarget->ldsRequiresM0Init()">;
 def HasDSAddTid : Predicate<"Subtarget->getGeneration() >= AMDGPUSubtarget::GFX9">,
   AssemblerPredicate<(all_of FeatureGFX9Insts)>;
 
-def HasLDSFPAtomics : Predicate<"Subtarget->hasLDSFPAtomics()">,
+def HasLDSFPAtomicAdd : Predicate<"Subtarget->hasLDSFPAtomicAdd()">,
   AssemblerPredicate<(all_of FeatureGFX8Insts)>;
 
 def HasAddNoCarryInsts : Predicate<"Subtarget->hasAddNoCarry()">,

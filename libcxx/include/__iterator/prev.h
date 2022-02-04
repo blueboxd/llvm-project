@@ -12,7 +12,6 @@
 
 #include <__config>
 #include <__debug>
-#include <__function_like.h>
 #include <__iterator/advance.h>
 #include <__iterator/concepts.h>
 #include <__iterator/incrementable_traits.h>
@@ -22,9 +21,6 @@
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
 #endif
-
-_LIBCPP_PUSH_MACROS
-#include <__undef_macros>
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
@@ -38,38 +34,45 @@ inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_AFTER_CXX14
   return __x;
 }
 
-#if !defined(_LIBCPP_HAS_NO_RANGES)
+#if !defined(_LIBCPP_HAS_NO_CONCEPTS)
+
+// [range.iter.op.prev]
 
 namespace ranges {
-struct __prev_fn final : private __function_like {
-  constexpr explicit __prev_fn(__tag __x) noexcept : __function_like(__x) {}
+namespace __prev {
 
+struct __fn {
   template <bidirectional_iterator _Ip>
+  _LIBCPP_HIDE_FROM_ABI
   constexpr _Ip operator()(_Ip __x) const {
     --__x;
     return __x;
   }
 
   template <bidirectional_iterator _Ip>
+  _LIBCPP_HIDE_FROM_ABI
   constexpr _Ip operator()(_Ip __x, iter_difference_t<_Ip> __n) const {
     ranges::advance(__x, -__n);
     return __x;
   }
 
   template <bidirectional_iterator _Ip>
+  _LIBCPP_HIDE_FROM_ABI
   constexpr _Ip operator()(_Ip __x, iter_difference_t<_Ip> __n, _Ip __bound) const {
     ranges::advance(__x, -__n, __bound);
     return __x;
   }
 };
 
-inline constexpr auto prev = __prev_fn(__function_like::__tag());
+} // namespace __prev
+
+inline namespace __cpo {
+  inline constexpr auto prev = __prev::__fn{};
+} // namespace __cpo
 } // namespace ranges
 
-#endif // !defined(_LIBCPP_HAS_NO_RANGES)
+#endif // !defined(_LIBCPP_HAS_NO_CONCEPTS)
 
 _LIBCPP_END_NAMESPACE_STD
-
-_LIBCPP_POP_MACROS
 
 #endif // _LIBCPP___ITERATOR_PREV_H
