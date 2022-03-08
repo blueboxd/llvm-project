@@ -284,11 +284,12 @@ public:
           }
         }
         resultIndices.emplace_back(hit);
-        at[zbDim] = dimLength;
+        at[zbDim] = std::max<ConstantSubscript>(dimLength, 1);
         array->IncrementSubscripts(at);
         at[zbDim] = 1;
         if (mask) {
-          maskAt[zbDim] = mask->lbounds()[zbDim] + dimLength - 1;
+          maskAt[zbDim] = mask->lbounds()[zbDim] +
+              std::max<ConstantSubscript>(dimLength, 1) - 1;
           mask->IncrementSubscripts(maskAt);
           maskAt[zbDim] = mask->lbounds()[zbDim];
         }
@@ -677,7 +678,11 @@ Expr<Type<TypeCategory::Integer, KIND>> FoldIntrinsicFunction(
       return std::visit(
           [&](auto &kx) {
             if (auto len{kx.LEN()}) {
-              return Fold(context, ConvertToType<T>(*std::move(len)));
+              if (IsScopeInvariantExpr(*len)) {
+                return Fold(context, ConvertToType<T>(*std::move(len)));
+              } else {
+                return Expr<T>{std::move(funcRef)};
+              }
             } else {
               return Expr<T>{std::move(funcRef)};
             }

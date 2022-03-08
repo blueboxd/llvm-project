@@ -22,6 +22,10 @@
 #include <cstddef>
 #include <system_error>
 
+#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+#  pragma GCC system_header
+#endif
+
 #ifndef _LIBCPP_CXX03_LANG
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
@@ -174,7 +178,7 @@ template <>
 _LIBCPP_AVAILABILITY_FILESYSTEM
 inline constexpr bool _VSTD::ranges::enable_view<_VSTD_FS::recursive_directory_iterator> = true;
 
-#endif
+#endif // !defined(_LIBCPP_HAS_NO_CONCEPTS)
 
 #endif // _LIBCPP_CXX03_LANG
 

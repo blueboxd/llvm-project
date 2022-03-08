@@ -10,6 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+
 #include <type_traits>
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -18,8 +20,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
-
-#include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+#include "mlir/Dialect/Vector/Utils/VectorUtils.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -299,6 +300,18 @@ public:
   }
 };
 
+/// Return the number of leftmost dimensions from the first rightmost transposed
+/// dimension found in 'transpose'.
+size_t getNumDimsFromFirstTransposedDim(ArrayRef<int64_t> transpose) {
+  size_t numTransposedDims = transpose.size();
+  for (size_t transpDim : llvm::reverse(transpose)) {
+    if (transpDim != numTransposedDims - 1)
+      break;
+    numTransposedDims--;
+  }
+  return numTransposedDims;
+}
+
 /// Progressive lowering of TransposeOp.
 /// One:
 ///   %x = vector.transpose %y, [1, 0]
@@ -350,35 +363,51 @@ public:
       return success();
     }
 
-    // Generate fully unrolled extract/insert ops.
+    // Generate unrolled extract/insert ops. We do not unroll the rightmost
+    // (i.e., highest-order) dimensions that are not transposed and leave them
+    // in vector form to improve performance.
+    size_t numLeftmostTransposedDims = getNumDimsFromFirstTransposedDim(transp);
+
+    // The type of the extract operation will be scalar if all the dimensions
+    // are unrolled. Otherwise, it will be a vector with the shape of the
+    // dimensions that are not transposed.
+    Type extractType =
+        numLeftmostTransposedDims == transp.size()
+            ? resType.getElementType()
+            : VectorType::Builder(resType).setShape(
+                  resType.getShape().drop_front(numLeftmostTransposedDims));
+
     Value result = rewriter.create<arith::ConstantOp>(
         loc, resType, rewriter.getZeroAttr(resType));
-    SmallVector<int64_t, 4> lhs(transp.size(), 0);
-    SmallVector<int64_t, 4> rhs(transp.size(), 0);
-    rewriter.replaceOp(op, expandIndices(loc, resType, 0, transp, lhs, rhs,
-                                         op.vector(), result, rewriter));
+    SmallVector<int64_t, 4> lhs(numLeftmostTransposedDims, 0);
+    SmallVector<int64_t, 4> rhs(numLeftmostTransposedDims, 0);
+    rewriter.replaceOp(op, expandIndices(loc, resType, extractType, 0,
+                                         numLeftmostTransposedDims, transp, lhs,
+                                         rhs, op.vector(), result, rewriter));
     return success();
   }
 
 private:
   // Builds the indices arrays for the lhs and rhs. Generates the extract/insert
-  // operation when al ranks are exhausted.
-  Value expandIndices(Location loc, VectorType resType, int64_t pos,
+  // operations when all the ranks go over the last dimension being transposed.
+  Value expandIndices(Location loc, VectorType resType, Type extractType,
+                      int64_t pos, int64_t numLeftmostTransposedDims,
                       SmallVector<int64_t, 4> &transp,
                       SmallVector<int64_t, 4> &lhs,
                       SmallVector<int64_t, 4> &rhs, Value input, Value result,
                       PatternRewriter &rewriter) const {
-    if (pos >= resType.getRank()) {
+    if (pos >= numLeftmostTransposedDims) {
       auto ridx = rewriter.getI64ArrayAttr(rhs);
       auto lidx = rewriter.getI64ArrayAttr(lhs);
-      Type eltType = resType.getElementType();
-      Value e = rewriter.create<vector::ExtractOp>(loc, eltType, input, ridx);
+      Value e =
+          rewriter.create<vector::ExtractOp>(loc, extractType, input, ridx);
       return rewriter.create<vector::InsertOp>(loc, resType, e, result, lidx);
     }
     for (int64_t d = 0, e = resType.getDimSize(pos); d < e; ++d) {
       lhs[pos] = d;
       rhs[transp[pos]] = d;
-      result = expandIndices(loc, resType, pos + 1, transp, lhs, rhs, input,
+      result = expandIndices(loc, resType, extractType, pos + 1,
+                             numLeftmostTransposedDims, transp, lhs, rhs, input,
                              result, rewriter);
     }
     return result;
@@ -514,40 +543,11 @@ private:
     if (!acc)
       return Optional<Value>(mul);
 
-    Value combinedResult;
-    switch (kind) {
-    case CombiningKind::ADD:
-      combinedResult = rewriter.create<arith::AddIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MUL:
-      combinedResult = rewriter.create<arith::MulIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MINUI:
-      combinedResult = rewriter.create<arith::MinUIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MINSI:
-      combinedResult = rewriter.create<arith::MinSIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MAXUI:
-      combinedResult = rewriter.create<arith::MaxUIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MAXSI:
-      combinedResult = rewriter.create<arith::MaxSIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::AND:
-      combinedResult = rewriter.create<arith::AndIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::OR:
-      combinedResult = rewriter.create<arith::OrIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::XOR:
-      combinedResult = rewriter.create<arith::XOrIOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MINF: // Only valid for floating point types.
-    case CombiningKind::MAXF: // Only valid for floating point types.
+    if (kind == CombiningKind::MINF || kind == CombiningKind::MAXF)
+      // Only valid for floating point types.
       return Optional<Value>();
-    }
-    return Optional<Value>(combinedResult);
+
+    return makeArithReduction(rewriter, loc, kind, mul, acc);
   }
 
   static Optional<Value> genMultF(Location loc, Value x, Value y, Value acc,
@@ -565,28 +565,14 @@ private:
     if (!acc)
       return Optional<Value>(mul);
 
-    Value combinedResult;
-    switch (kind) {
-    case CombiningKind::MUL:
-      combinedResult = rewriter.create<arith::MulFOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MINF:
-      combinedResult = rewriter.create<arith::MinFOp>(loc, mul, acc);
-      break;
-    case CombiningKind::MAXF:
-      combinedResult = rewriter.create<arith::MaxFOp>(loc, mul, acc);
-      break;
-    case CombiningKind::ADD:   // Already handled this special case above.
-    case CombiningKind::AND:   // Only valid for integer types.
-    case CombiningKind::MINUI: // Only valid for integer types.
-    case CombiningKind::MINSI: // Only valid for integer types.
-    case CombiningKind::MAXUI: // Only valid for integer types.
-    case CombiningKind::MAXSI: // Only valid for integer types.
-    case CombiningKind::OR:    // Only valid for integer types.
-    case CombiningKind::XOR:   // Only valid for integer types.
+    if (kind == CombiningKind::ADD || kind == CombiningKind::AND ||
+        kind == CombiningKind::MINUI || kind == CombiningKind::MINSI ||
+        kind == CombiningKind::MAXUI || kind == CombiningKind::MAXSI ||
+        kind == CombiningKind::OR || kind == CombiningKind::XOR)
+      // Already handled or only valid for integer types.
       return Optional<Value>();
-    }
-    return Optional<Value>(combinedResult);
+
+    return makeArithReduction(rewriter, loc, kind, mul, acc);
   }
 };
 
@@ -1023,6 +1009,84 @@ struct CombineContractBroadcast
   }
 };
 
+/// Reorders cast(broadcast) to broadcast(cast). This makes broadcast ops and
+/// contraction ops closer, which kicks in CombineContractBroadcast pattern when
+/// casting ops are around these operations.
+/// Ex:
+/// ```
+///   %0 = vector.broadcast %arg0 : vector<32x16xi8> to vector<8x32x16xi8>
+///   %1 = arith.extsi %0 : vector<8x32x16xi8> to vector<8x32x16xi32>
+/// ```
+/// Gets converted to:
+/// ```
+///   %0 = arith.extsi %0 : vector<32x16xi8> to vector<32x16xi32>
+///   %1 = vector.broadcast %arg0 : vector<32x16xi32> to vector<8x32x16xi32>
+/// ```
+struct ReorderCastOpsOnBroadcast
+    : public OpInterfaceRewritePattern<CastOpInterface> {
+  using OpInterfaceRewritePattern<CastOpInterface>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(CastOpInterface op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 1)
+      return failure();
+    auto bcastOp = op->getOperand(0).getDefiningOp<vector::BroadcastOp>();
+    if (!bcastOp)
+      return failure();
+
+    Type castResTy = getElementTypeOrSelf(op->getResult(0));
+    if (auto vecTy = bcastOp.getSourceType().dyn_cast<VectorType>())
+      castResTy = VectorType::get(vecTy.getShape(), castResTy);
+    OperationState state(op->getLoc(), op->getName(), bcastOp.source(),
+                         castResTy, op->getAttrs());
+    auto castOp = rewriter.createOperation(state);
+    rewriter.replaceOpWithNewOp<vector::BroadcastOp>(
+        op, op->getResult(0).getType(), castOp->getResult(0));
+    return success();
+  }
+};
+
+/// Reorders cast(transpose) to transpose(cast). This makes broadcast ops and
+/// contraction ops closer, which kicks in CombineContractTranspose pattern when
+/// casting ops are around these operations.
+/// Ex:
+/// ```
+///   %0 = vector.transpose %arg0, [2, 0, 1]
+///     : vector<32x16x8xi8> to vector<8x32x16xi8>
+///   %1 = arith.extsi %0 : vector<8x32x16xi8> to vector<8x32x16xi32>
+/// ```
+/// Gets converted to:
+/// ```
+///   %0 = arith.extsi %0 : vector<32x16x8xi8> to vector<32x16x8xi32>
+///   %1 = vector.transpose %arg0, [2, 0, 1]
+///     : vector<32x16x8xi32> to vector<8x32x16xi32>
+/// ```
+struct ReorderCastOpsOnTranspose
+    : public OpInterfaceRewritePattern<CastOpInterface> {
+
+  using OpInterfaceRewritePattern<CastOpInterface>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(CastOpInterface op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 1)
+      return failure();
+    auto transpOp = op->getOperand(0).getDefiningOp<vector::TransposeOp>();
+    if (!transpOp)
+      return failure();
+
+    auto castResTy = transpOp.getVectorType();
+    castResTy = VectorType::get(castResTy.getShape(),
+                                getElementTypeOrSelf(op->getResult(0)));
+    OperationState state(op->getLoc(), op->getName(), transpOp.vector(),
+                         castResTy, op->getAttrs());
+    auto castOp = rewriter.createOperation(state);
+    rewriter.replaceOpWithNewOp<vector::TransposeOp>(
+        op, op->getResult(0).getType(), castOp->getResult(0),
+        transpOp.getTransp());
+    return success();
+  }
+};
+
 } // namespace
 
 /// Creates an AddIOp if `isInt` is true otherwise create an arith::AddFOp using
@@ -1092,7 +1156,7 @@ ContractionOpToMatmulOpLowering::matchAndRewrite(vector::ContractionOp op,
   bindDims(rew.getContext(), m, n, k);
   // LHS must be A(m, k) or A(k, m).
   Value lhs = op.lhs();
-  auto lhsMap = op.indexing_maps()[0].cast<AffineMapAttr>().getValue();
+  auto lhsMap = op.indexing_maps()[0];
   if (lhsMap == AffineMap::get(3, 0, {k, m}, ctx))
     lhs = rew.create<vector::TransposeOp>(loc, lhs, ArrayRef<int64_t>{1, 0});
   else if (lhsMap != AffineMap::get(3, 0, {m, k}, ctx))
@@ -1100,7 +1164,7 @@ ContractionOpToMatmulOpLowering::matchAndRewrite(vector::ContractionOp op,
 
   // RHS must be B(k, n) or B(n, k).
   Value rhs = op.rhs();
-  auto rhsMap = op.indexing_maps()[1].cast<AffineMapAttr>().getValue();
+  auto rhsMap = op.indexing_maps()[1];
   if (rhsMap == AffineMap::get(3, 0, {n, k}, ctx))
     rhs = rew.create<vector::TransposeOp>(loc, rhs, ArrayRef<int64_t>{1, 0});
   else if (rhsMap != AffineMap::get(3, 0, {k, n}, ctx))
@@ -1130,7 +1194,7 @@ ContractionOpToMatmulOpLowering::matchAndRewrite(vector::ContractionOp op,
       mul);
 
   // ACC must be C(m, n) or C(n, m).
-  auto accMap = op.indexing_maps()[2].cast<AffineMapAttr>().getValue();
+  auto accMap = op.indexing_maps()[2];
   if (accMap == AffineMap::get(3, 0, {n, m}, ctx))
     mul = rew.create<vector::TransposeOp>(loc, mul, ArrayRef<int64_t>{1, 0});
   else if (accMap != AffineMap::get(3, 0, {m, n}, ctx))
@@ -1427,8 +1491,7 @@ ContractionOpToDotLowering::matchAndRewrite(vector::ContractionOp op,
                     : rewriter.create<vector::ExtractOp>(op.getLoc(), rhs, c);
       Value m = createMul(op.getLoc(), a, b, isInt, rewriter);
       Value reduced = rewriter.create<vector::ReductionOp>(
-          op.getLoc(), dstType.getElementType(), rewriter.getStringAttr("add"),
-          m, ValueRange{});
+          op.getLoc(), vector::CombiningKind::ADD, m);
 
       SmallVector<int64_t, 2> pos = rank == 1 ? SmallVector<int64_t, 2>{r}
                                               : SmallVector<int64_t, 2>{r, c};
@@ -1608,9 +1671,8 @@ Value ContractionOpLowering::lowerReduction(vector::ContractionOp op,
   if (lhsType.getRank() == 1) {
     assert(rhsType.getRank() == 1 && "corrupt contraction");
     Value m = createMul(loc, op.lhs(), op.rhs(), isInt, rewriter);
-    StringAttr kind = rewriter.getStringAttr("add");
-    Value res = rewriter.create<vector::ReductionOp>(loc, resType, kind, m,
-                                                     ValueRange{});
+    auto kind = vector::CombiningKind::ADD;
+    Value res = rewriter.create<vector::ReductionOp>(loc, kind, m);
     if (auto acc = op.acc())
       res = createAdd(op.getLoc(), res, acc, isInt, rewriter);
     return res;
@@ -2197,22 +2259,21 @@ public:
     Location loc = xferOp->getLoc();
     VectorType vtp = xferOp.getVectorType();
 
-    // * Create a vector with linear indices [ 0 .. vector_length - 1 ].
-    // * Create offsetVector = [ offset + 0 .. offset + vector_length - 1 ].
-    // * Let dim the memref dimension, compute the vector comparison mask
-    //   (in-bounds mask):
-    //   [ offset + 0 .. offset + vector_length - 1 ] < [ dim .. dim ]
+    // Create the in-bounds mask with all elements between [0 .. dim - offset)
+    // set and [dim - offset .. vector_length) unset.
     //
     // TODO: when the leaf transfer rank is k > 1, we need the last `k`
     //       dimensions here.
-    unsigned vecWidth = vtp.getNumElements();
     unsigned lastIndex = llvm::size(xferOp.indices()) - 1;
     Value off = xferOp.indices()[lastIndex];
     Value dim =
         vector::createOrFoldDimOp(rewriter, loc, xferOp.source(), lastIndex);
-    Value mask = buildVectorComparison(rewriter, xferOp, indexOptimizations,
-                                       vecWidth, dim, &off);
-
+    Value b = rewriter.create<arith::SubIOp>(loc, dim.getType(), dim, off);
+    Value mask = rewriter.create<vector::CreateMaskOp>(
+        loc,
+        VectorType::get(vtp.getShape(), rewriter.getI1Type(),
+                        vtp.getNumScalableDims()),
+        b);
     if (xferOp.mask()) {
       // Intersect the in-bounds with the mask specified as an op parameter.
       mask = rewriter.create<arith::AndIOp>(loc, mask, xferOp.mask());
@@ -2601,7 +2662,8 @@ void mlir::vector::populateVectorTransposeLoweringPatterns(
 void mlir::vector::populateVectorReductionToContractPatterns(
     RewritePatternSet &patterns) {
   patterns.add<MultiReduceToContract, CombineContractBroadcast,
-               CombineContractTranspose>(patterns.getContext());
+               CombineContractTranspose, ReorderCastOpsOnBroadcast,
+               ReorderCastOpsOnTranspose>(patterns.getContext());
 }
 
 void mlir::vector::

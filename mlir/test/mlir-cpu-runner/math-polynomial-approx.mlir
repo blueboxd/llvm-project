@@ -2,7 +2,7 @@
 // RUN:               -convert-arith-to-llvm                                   \
 // RUN:               -convert-vector-to-llvm                                  \
 // RUN:               -convert-math-to-llvm                                    \
-// RUN:               -convert-std-to-llvm                                     \
+// RUN:               -convert-func-to-llvm                                     \
 // RUN:               -reconcile-unrealized-casts                              \
 // RUN: | mlir-cpu-runner                                                      \
 // RUN:     -e main -entry-point-result=void -O0                               \
@@ -28,6 +28,11 @@ func @tanh() {
   %4 = arith.constant dense<[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]> : vector<8xf32>
   %5 = math.tanh %4 : vector<8xf32>
   vector.print %5 : vector<8xf32>
+
+  // CHECK-NEXT: nan
+  %nan = arith.constant 0x7fc00000 : f32
+  %6 = math.tanh %nan : f32
+  vector.print %6 : f32
 
   return
 }
@@ -258,6 +263,11 @@ func @exp() {
   %exp_negative_inf = math.exp %negative_inf : f32
   vector.print %exp_negative_inf : f32
 
+  // CHECK: nan
+  %nan = arith.constant 0x7fc00000 : f32
+  %exp_nan = math.exp %nan : f32
+  vector.print %exp_nan : f32
+
   return
 }
 
@@ -291,6 +301,11 @@ func @expm1() {
   %special_vec = arith.constant dense<[0xff800000, 0x7f800000, 1.0e-10]> : vector<3xf32>
   %log_special_vec = math.expm1 %special_vec : vector<3xf32>
   vector.print %log_special_vec : vector<3xf32>
+
+  // CHECK: nan
+  %nan = arith.constant 0x7fc00000 : f32
+  %exp_nan = math.expm1 %nan : f32
+  vector.print %exp_nan : f32
 
   return
 }

@@ -19,7 +19,6 @@
 #include "llvm/Analysis/ConstraintSystem.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
@@ -75,6 +74,9 @@ public:
   }
 
   void popLastConstraint(bool Signed) { getCS(Signed).popLastConstraint(); }
+  void popLastNVariables(bool Signed, unsigned N) {
+    getCS(Signed).popLastNVariables(N);
+  }
 };
 
 /// Struct to express a pre-condition of the form %Op0 Pred %Op1.
@@ -89,52 +91,31 @@ struct PreconditionTy {
 
 struct ConstraintTy {
   SmallVector<int64_t, 8> Coefficients;
+  SmallVector<PreconditionTy, 2> Preconditions;
 
-  bool IsSigned;
+  bool IsSigned = false;
+  bool IsEq = false;
+
+  ConstraintTy() = default;
 
   ConstraintTy(SmallVector<int64_t, 8> Coefficients, bool IsSigned)
       : Coefficients(Coefficients), IsSigned(IsSigned) {}
 
   unsigned size() const { return Coefficients.size(); }
-};
 
-/// Struct to manage a list of constraints with pre-conditions that must be
-/// satisfied before using the constraints.
-struct ConstraintListTy {
-  SmallVector<ConstraintTy, 4> Constraints;
-  SmallVector<PreconditionTy, 4> Preconditions;
-
-  ConstraintListTy() {}
-
-  ConstraintListTy(ArrayRef<ConstraintTy> Constraints,
-                   ArrayRef<PreconditionTy> Preconditions)
-      : Constraints(Constraints.begin(), Constraints.end()),
-        Preconditions(Preconditions.begin(), Preconditions.end()) {}
-
-  void mergeIn(const ConstraintListTy &Other) {
-    append_range(Constraints, Other.Constraints);
-    // TODO: Do smarter merges here, e.g. exclude duplicates.
-    append_range(Preconditions, Other.Preconditions);
-  }
-
-  unsigned size() const { return Constraints.size(); }
-
-  unsigned empty() const { return Constraints.empty(); }
+  unsigned empty() const { return Coefficients.empty(); }
 
   /// Returns true if any constraint has a non-zero coefficient for any of the
   /// newly added indices. Zero coefficients for new indices are removed. If it
   /// returns true, no new variable need to be added to the system.
   bool needsNewIndices(const DenseMap<Value *, unsigned> &NewIndices) {
-    assert(size() == 1);
     for (unsigned I = 0; I < NewIndices.size(); ++I) {
-      int64_t Last = get(0).Coefficients.pop_back_val();
+      int64_t Last = Coefficients.pop_back_val();
       if (Last != 0)
         return true;
     }
     return false;
   }
-
-  ConstraintTy &get(unsigned I) { return Constraints[I]; }
 
   /// Returns true if all preconditions for this list of constraints are
   /// satisfied given \p CS and the corresponding \p Value2Index mapping.
@@ -172,9 +153,9 @@ decompose(Value *V, SmallVector<PreconditionTy, 4> &Preconditions,
   }
 
   if (auto *CI = dyn_cast<ConstantInt>(V)) {
-    if (CI->isNegative() || CI->uge(MaxConstraintValue))
+    if (CI->uge(MaxConstraintValue))
       return {};
-    return {{CI->getSExtValue(), nullptr}};
+    return {{CI->getZExtValue(), nullptr}};
   }
   auto *GEP = dyn_cast<GetElementPtrInst>(V);
   if (GEP && GEP->getNumOperands() == 2 && GEP->isInBounds()) {
@@ -227,8 +208,15 @@ decompose(Value *V, SmallVector<PreconditionTy, 4> &Preconditions,
 
   Value *Op1;
   ConstantInt *CI;
-  if (match(V, m_NUWAdd(m_Value(Op0), m_ConstantInt(CI))))
+  if (match(V, m_NUWAdd(m_Value(Op0), m_ConstantInt(CI))) &&
+      !CI->uge(MaxConstraintValue))
+    return {{CI->getZExtValue(), nullptr}, {1, Op0}};
+  if (match(V, m_Add(m_Value(Op0), m_ConstantInt(CI))) && CI->isNegative()) {
+    Preconditions.emplace_back(
+        CmpInst::ICMP_UGE, Op0,
+        ConstantInt::get(Op0->getType(), CI->getSExtValue() * -1));
     return {{CI->getSExtValue(), nullptr}, {1, Op0}};
+  }
   if (match(V, m_NUWAdd(m_Value(Op0), m_Value(Op1))))
     return {{0, nullptr}, {1, Op0}, {1, Op1}};
 
@@ -243,48 +231,37 @@ decompose(Value *V, SmallVector<PreconditionTy, 4> &Preconditions,
 /// Turn a condition \p CmpI into a vector of constraints, using indices from \p
 /// Value2Index. Additional indices for newly discovered values are added to \p
 /// NewIndices.
-static ConstraintListTy
+static ConstraintTy
 getConstraint(CmpInst::Predicate Pred, Value *Op0, Value *Op1,
               const DenseMap<Value *, unsigned> &Value2Index,
               DenseMap<Value *, unsigned> &NewIndices) {
-  int64_t Offset1 = 0;
-  int64_t Offset2 = 0;
-
-  SmallVector<PreconditionTy, 4> Preconditions;
-  // First try to look up \p V in Value2Index and NewIndices. Otherwise add a
-  // new entry to NewIndices.
-  auto GetOrAddIndex = [&Value2Index, &NewIndices](Value *V) -> unsigned {
-    auto V2I = Value2Index.find(V);
-    if (V2I != Value2Index.end())
-      return V2I->second;
-    auto NewI = NewIndices.find(V);
-    if (NewI != NewIndices.end())
-      return NewI->second;
-    auto Insert =
-        NewIndices.insert({V, Value2Index.size() + NewIndices.size() + 1});
-    return Insert.first->second;
-  };
-
-  if (Pred == CmpInst::ICMP_UGT || Pred == CmpInst::ICMP_UGE ||
-      Pred == CmpInst::ICMP_SGT || Pred == CmpInst::ICMP_SGE)
-    return getConstraint(CmpInst::getSwappedPredicate(Pred), Op1, Op0,
-                         Value2Index, NewIndices);
-
-  if (Pred == CmpInst::ICMP_EQ) {
-    if (match(Op1, m_Zero()))
-      return getConstraint(CmpInst::ICMP_ULE, Op0, Op1, Value2Index,
-                           NewIndices);
-
-    auto A =
-        getConstraint(CmpInst::ICMP_UGE, Op0, Op1, Value2Index, NewIndices);
-    auto B =
-        getConstraint(CmpInst::ICMP_ULE, Op0, Op1, Value2Index, NewIndices);
-    A.mergeIn(B);
-    return A;
+  bool IsEq = false;
+  // Try to convert Pred to one of ULE/SLT/SLE/SLT.
+  switch (Pred) {
+  case CmpInst::ICMP_UGT:
+  case CmpInst::ICMP_UGE:
+  case CmpInst::ICMP_SGT:
+  case CmpInst::ICMP_SGE: {
+    Pred = CmpInst::getSwappedPredicate(Pred);
+    std::swap(Op0, Op1);
+    break;
   }
-
-  if (Pred == CmpInst::ICMP_NE && match(Op1, m_Zero())) {
-    return getConstraint(CmpInst::ICMP_UGT, Op0, Op1, Value2Index, NewIndices);
+  case CmpInst::ICMP_EQ:
+    if (match(Op1, m_Zero())) {
+      Pred = CmpInst::ICMP_ULE;
+    } else {
+      IsEq = true;
+      Pred = CmpInst::ICMP_ULE;
+    }
+    break;
+  case CmpInst::ICMP_NE:
+    if (!match(Op1, m_Zero()))
+      return {};
+    Pred = CmpInst::getSwappedPredicate(CmpInst::ICMP_UGT);
+    std::swap(Op0, Op1);
+    break;
+  default:
+    break;
   }
 
   // Only ULE and ULT predicates are supported at the moment.
@@ -292,6 +269,7 @@ getConstraint(CmpInst::Predicate Pred, Value *Op0, Value *Op1,
       Pred != CmpInst::ICMP_SLE && Pred != CmpInst::ICMP_SLT)
     return {};
 
+  SmallVector<PreconditionTy, 4> Preconditions;
   bool IsSigned = CmpInst::isSigned(Pred);
   auto ADec = decompose(Op0->stripPointerCastsSameRepresentation(),
                         Preconditions, IsSigned);
@@ -305,13 +283,24 @@ getConstraint(CmpInst::Predicate Pred, Value *Op0, Value *Op1,
   if (ADec.size() == 1 && BDec.size() == 1)
     return {};
 
-  Offset1 = ADec[0].first;
-  Offset2 = BDec[0].first;
+  int64_t Offset1 = ADec[0].first;
+  int64_t Offset2 = BDec[0].first;
   Offset1 *= -1;
 
   // Create iterator ranges that skip the constant-factor.
   auto VariablesA = llvm::drop_begin(ADec);
   auto VariablesB = llvm::drop_begin(BDec);
+
+  // First try to look up \p V in Value2Index and NewIndices. Otherwise add a
+  // new entry to NewIndices.
+  auto GetOrAddIndex = [&Value2Index, &NewIndices](Value *V) -> unsigned {
+    auto V2I = Value2Index.find(V);
+    if (V2I != Value2Index.end())
+      return V2I->second;
+    auto Insert =
+        NewIndices.insert({V, Value2Index.size() + NewIndices.size() + 1});
+    return Insert.first->second;
+  };
 
   // Make sure all variables have entries in Value2Index or NewIndices.
   for (const auto &KV :
@@ -320,7 +309,11 @@ getConstraint(CmpInst::Predicate Pred, Value *Op0, Value *Op1,
 
   // Build result constraint, by first adding all coefficients from A and then
   // subtracting all coefficients from B.
-  SmallVector<int64_t, 8> R(Value2Index.size() + NewIndices.size() + 1, 0);
+  ConstraintTy Res(
+      SmallVector<int64_t, 8>(Value2Index.size() + NewIndices.size() + 1, 0),
+      IsSigned);
+  Res.IsEq = IsEq;
+  auto &R = Res.Coefficients;
   for (const auto &KV : VariablesA)
     R[GetOrAddIndex(KV.second)] += KV.first;
 
@@ -329,27 +322,30 @@ getConstraint(CmpInst::Predicate Pred, Value *Op0, Value *Op1,
 
   R[0] = Offset1 + Offset2 +
          (Pred == (IsSigned ? CmpInst::ICMP_SLT : CmpInst::ICMP_ULT) ? -1 : 0);
-  return {{{R, IsSigned}}, Preconditions};
+  Res.Preconditions = std::move(Preconditions);
+  return Res;
 }
 
-static ConstraintListTy getConstraint(CmpInst *Cmp, ConstraintInfo &Info,
-                                      DenseMap<Value *, unsigned> &NewIndices) {
+static ConstraintTy getConstraint(CmpInst *Cmp, ConstraintInfo &Info,
+                                  DenseMap<Value *, unsigned> &NewIndices) {
   return getConstraint(
       Cmp->getPredicate(), Cmp->getOperand(0), Cmp->getOperand(1),
       Info.getValue2Index(CmpInst::isSigned(Cmp->getPredicate())), NewIndices);
 }
 
-bool ConstraintListTy::isValid(const ConstraintInfo &Info) const {
-  return all_of(Preconditions, [&Info](const PreconditionTy &C) {
-    DenseMap<Value *, unsigned> NewIndices;
-    auto R = getConstraint(C.Pred, C.Op0, C.Op1,
-                           Info.getValue2Index(CmpInst::isSigned(C.Pred)),
-                           NewIndices);
-    // TODO: properly check NewIndices.
-    return NewIndices.empty() && R.Preconditions.empty() && R.size() == 1 &&
-           Info.getCS(CmpInst::isSigned(C.Pred))
-               .isConditionImplied(R.get(0).Coefficients);
-  });
+bool ConstraintTy::isValid(const ConstraintInfo &Info) const {
+  return Coefficients.size() > 0 &&
+         all_of(Preconditions, [&Info](const PreconditionTy &C) {
+           DenseMap<Value *, unsigned> NewIndices;
+           auto R = getConstraint(
+               C.Pred, C.Op0, C.Op1,
+               Info.getValue2Index(CmpInst::isSigned(C.Pred)), NewIndices);
+           // TODO: properly check NewIndices.
+           return NewIndices.empty() && R.Preconditions.empty() && !R.IsEq &&
+                  R.size() >= 2 &&
+                  Info.getCS(CmpInst::isSigned(C.Pred))
+                      .isConditionImplied(R.Coefficients);
+         });
 }
 
 namespace {
@@ -379,11 +375,14 @@ struct StackEntry {
   Instruction *Condition;
   bool IsNot;
   bool IsSigned = false;
+  /// Variables that can be removed from the system once the stack entry gets
+  /// removed.
+  SmallVector<Value *, 2> ValuesToRelease;
 
-  StackEntry(unsigned NumIn, unsigned NumOut, Instruction *Condition,
-             bool IsNot, bool IsSigned)
+  StackEntry(unsigned NumIn, unsigned NumOut, CmpInst *Condition, bool IsNot,
+             bool IsSigned, SmallVector<Value *, 2> ValuesToRelease)
       : NumIn(NumIn), NumOut(NumOut), Condition(Condition), IsNot(IsNot),
-        IsSigned(IsSigned) {}
+        IsSigned(IsSigned), ValuesToRelease(ValuesToRelease) {}
 };
 } // namespace
 
@@ -415,35 +414,6 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
       continue;
     WorkList.emplace_back(DT.getNode(&BB));
 
-    // True as long as long as the current instruction is guaranteed to execute.
-    bool GuaranteedToExecute = true;
-    // Scan BB for assume calls.
-    // TODO: also use this scan to queue conditions to simplify, so we can
-    // interleave facts from assumes and conditions to simplify in a single
-    // basic block. And to skip another traversal of each basic block when
-    // simplifying.
-    for (Instruction &I : BB) {
-      Value *Cond;
-      // For now, just handle assumes with a single compare as condition.
-      if (match(&I, m_Intrinsic<Intrinsic::assume>(m_Value(Cond))) &&
-          isa<CmpInst>(Cond)) {
-        if (GuaranteedToExecute) {
-          // The assume is guaranteed to execute when BB is entered, hence Cond
-          // holds on entry to BB.
-          WorkList.emplace_back(DT.getNode(&BB), cast<CmpInst>(Cond), false);
-        } else {
-          // Otherwise the condition only holds in the successors.
-          for (BasicBlock *Succ : successors(&BB))
-            WorkList.emplace_back(DT.getNode(Succ), cast<CmpInst>(Cond), false);
-        }
-      }
-      GuaranteedToExecute &= isGuaranteedToTransferExecutionToSuccessor(&I);
-    }
-
-    auto *Br = dyn_cast<BranchInst>(BB.getTerminator());
-    if (!Br || !Br->isConditional())
-      continue;
-
     // Returns true if we can add a known condition from BB to its successor
     // block Succ. Each predecessor of Succ can either be BB or be dominated by
     // Succ (e.g. the case when adding a condition from a pre-header to a loop
@@ -456,17 +426,51 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
                return Pred == &BB || DT.dominates(Succ, Pred);
              });
     };
+
+    // True as long as long as the current instruction is guaranteed to execute.
+    bool GuaranteedToExecute = true;
+    // Scan BB for assume calls.
+    // TODO: also use this scan to queue conditions to simplify, so we can
+    // interleave facts from assumes and conditions to simplify in a single
+    // basic block. And to skip another traversal of each basic block when
+    // simplifying.
+    for (Instruction &I : BB) {
+      Value *Cond;
+      // For now, just handle assumes with a single compare as condition.
+      if (match(&I, m_Intrinsic<Intrinsic::assume>(m_Value(Cond))) &&
+          isa<ICmpInst>(Cond)) {
+        if (GuaranteedToExecute) {
+          // The assume is guaranteed to execute when BB is entered, hence Cond
+          // holds on entry to BB.
+          WorkList.emplace_back(DT.getNode(&BB), cast<ICmpInst>(Cond), false);
+        } else {
+          // Otherwise the condition only holds in the successors.
+          for (BasicBlock *Succ : successors(&BB)) {
+            if (!CanAdd(Succ))
+              continue;
+            WorkList.emplace_back(DT.getNode(Succ), cast<ICmpInst>(Cond),
+                                  false);
+          }
+        }
+      }
+      GuaranteedToExecute &= isGuaranteedToTransferExecutionToSuccessor(&I);
+    }
+
+    auto *Br = dyn_cast<BranchInst>(BB.getTerminator());
+    if (!Br || !Br->isConditional())
+      continue;
+
     // If the condition is an OR of 2 compares and the false successor only has
     // the current block as predecessor, queue both negated conditions for the
     // false successor.
     Value *Op0, *Op1;
     if (match(Br->getCondition(), m_LogicalOr(m_Value(Op0), m_Value(Op1))) &&
-        match(Op0, m_Cmp()) && match(Op1, m_Cmp())) {
+        isa<ICmpInst>(Op0) && isa<ICmpInst>(Op1)) {
       BasicBlock *FalseSuccessor = Br->getSuccessor(1);
       if (CanAdd(FalseSuccessor)) {
-        WorkList.emplace_back(DT.getNode(FalseSuccessor), cast<CmpInst>(Op0),
+        WorkList.emplace_back(DT.getNode(FalseSuccessor), cast<ICmpInst>(Op0),
                               true);
-        WorkList.emplace_back(DT.getNode(FalseSuccessor), cast<CmpInst>(Op1),
+        WorkList.emplace_back(DT.getNode(FalseSuccessor), cast<ICmpInst>(Op1),
                               true);
       }
       continue;
@@ -476,18 +480,18 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
     // the current block as predecessor, queue both conditions for the true
     // successor.
     if (match(Br->getCondition(), m_LogicalAnd(m_Value(Op0), m_Value(Op1))) &&
-        match(Op0, m_Cmp()) && match(Op1, m_Cmp())) {
+        isa<ICmpInst>(Op0) && isa<ICmpInst>(Op1)) {
       BasicBlock *TrueSuccessor = Br->getSuccessor(0);
       if (CanAdd(TrueSuccessor)) {
-        WorkList.emplace_back(DT.getNode(TrueSuccessor), cast<CmpInst>(Op0),
+        WorkList.emplace_back(DT.getNode(TrueSuccessor), cast<ICmpInst>(Op0),
                               false);
-        WorkList.emplace_back(DT.getNode(TrueSuccessor), cast<CmpInst>(Op1),
+        WorkList.emplace_back(DT.getNode(TrueSuccessor), cast<ICmpInst>(Op1),
                               false);
       }
       continue;
     }
 
-    auto *CmpI = dyn_cast<CmpInst>(Br->getCondition());
+    auto *CmpI = dyn_cast<ICmpInst>(Br->getCondition());
     if (!CmpI)
       continue;
     if (CanAdd(Br->getSuccessor(0)))
@@ -519,8 +523,13 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
         break;
       LLVM_DEBUG(dbgs() << "Removing " << *E.Condition << " " << E.IsNot
                         << "\n");
-      DFSInStack.pop_back();
       Info.popLastConstraint(E.IsSigned);
+      // Remove variables in the system that went out of scope.
+      auto &Mapping = Info.getValue2Index(E.IsSigned);
+      for (Value *V : E.ValuesToRelease)
+        Mapping.erase(V);
+      Info.popLastNVariables(E.IsSigned, E.ValuesToRelease.size());
+      DFSInStack.pop_back();
     }
 
     LLVM_DEBUG({
@@ -536,17 +545,18 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
     // of constraints.
     if (CB.IsBlock) {
       for (Instruction &I : *CB.BB) {
-        auto *Cmp = dyn_cast<CmpInst>(&I);
+        auto *Cmp = dyn_cast<ICmpInst>(&I);
         if (!Cmp)
           continue;
 
         DenseMap<Value *, unsigned> NewIndices;
         auto R = getConstraint(Cmp, Info, NewIndices);
-        if (!R.isValidSingle(Info) || R.needsNewIndices(NewIndices))
+        if (R.IsEq || R.size() < 2 || R.needsNewIndices(NewIndices) ||
+            !R.isValid(Info))
           continue;
 
-        auto &CSToUse = Info.getCS(R.get(0).IsSigned);
-        if (CSToUse.isConditionImplied(R.get(0).Coefficients)) {
+        auto &CSToUse = Info.getCS(R.IsSigned);
+        if (CSToUse.isConditionImplied(R.Coefficients)) {
           if (!DebugCounter::shouldExecute(EliminatedCounter))
             continue;
 
@@ -567,7 +577,7 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
           Changed = true;
         }
         if (CSToUse.isConditionImplied(
-                ConstraintSystem::negate(R.get(0).Coefficients))) {
+                ConstraintSystem::negate(R.Coefficients))) {
           if (!DebugCounter::shouldExecute(EliminatedCounter))
             continue;
 
@@ -588,7 +598,7 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
 
     // Set up a function to restore the predicate at the end of the scope if it
     // has been negated. Negate the predicate in-place, if required.
-    auto *CI = dyn_cast<CmpInst>(CB.Condition);
+    auto *CI = dyn_cast<ICmpInst>(CB.Condition);
     auto PredicateRestorer = make_scope_exit([CI, &CB]() {
       if (CB.Not && CI)
         CI->setPredicate(CI->getInversePredicate());
@@ -609,29 +619,42 @@ static bool eliminateConstraints(Function &F, DominatorTree &DT) {
     if (!R.isValid(Info))
       continue;
 
-    for (auto &KV : NewIndices)
-      Info.getValue2Index(CmpInst::isSigned(CB.Condition->getPredicate()))
-          .insert(KV);
-
     LLVM_DEBUG(dbgs() << "Adding " << *CB.Condition << " " << CB.Not << "\n");
     bool Added = false;
-    for (auto &E : R.Constraints) {
-      auto &CSToUse = Info.getCS(E.IsSigned);
-      if (E.Coefficients.empty())
-        continue;
+    assert(CmpInst::isSigned(CB.Condition->getPredicate()) == R.IsSigned &&
+           "condition and constraint signs must match");
+    auto &CSToUse = Info.getCS(R.IsSigned);
+    if (R.Coefficients.empty())
+      continue;
+
+    Added |= CSToUse.addVariableRowFill(R.Coefficients);
+
+    // If R has been added to the system, queue it for removal once it goes
+    // out-of-scope.
+    if (Added) {
+      SmallVector<Value *, 2> ValuesToRelease;
+      for (auto &KV : NewIndices) {
+        Info.getValue2Index(R.IsSigned).insert(KV);
+        ValuesToRelease.push_back(KV.first);
+      }
 
       LLVM_DEBUG({
         dbgs() << "  constraint: ";
-        dumpWithNames(E, Info.getValue2Index(E.IsSigned));
+        dumpWithNames(R, Info.getValue2Index(R.IsSigned));
       });
 
-      Added |= CSToUse.addVariableRowFill(E.Coefficients);
+      DFSInStack.emplace_back(CB.NumIn, CB.NumOut, CB.Condition, CB.Not,
+                              R.IsSigned, ValuesToRelease);
 
-      // If R has been added to the system, queue it for removal once it goes
-      // out-of-scope.
-      if (Added)
+      if (R.IsEq) {
+        // Also add the inverted constraint for equality constraints.
+        for (auto &Coeff : R.Coefficients)
+          Coeff *= -1;
+        CSToUse.addVariableRowFill(R.Coefficients);
+
         DFSInStack.emplace_back(CB.NumIn, CB.NumOut, CB.Condition, CB.Not,
-                                E.IsSigned);
+                                R.IsSigned, SmallVector<Value *, 2>());
+      }
     }
   }
 

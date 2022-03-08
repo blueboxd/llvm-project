@@ -108,6 +108,7 @@
 #include "llvm/Analysis/AssumeBundleQueries.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MustExecute.h"
@@ -116,12 +117,15 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/AbstractCallSite.h"
 #include "llvm/IR/ConstantRange.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/Utils/CallGraphUpdater.h"
+
+#include <map>
 
 namespace llvm {
 
@@ -192,11 +196,27 @@ bool getAssumedUnderlyingObjects(Attributor &A, const Value &Ptr,
                                  SmallVectorImpl<Value *> &Objects,
                                  const AbstractAttribute &QueryingAA,
                                  const Instruction *CtxI,
+                                 bool &UsedAssumedInformation,
                                  bool Intraprocedural = false);
+
+/// Collect all potential values \p LI could read into \p PotentialValues. That
+/// is, the only values read by \p LI are assumed to be known and all are in
+/// \p PotentialValues. Dependences onto \p QueryingAA are properly tracked,
+/// \p UsedAssumedInformation will inform the caller if assumed information was
+/// used.
+///
+/// \returns True if the assumed potential copies are all in \p PotentialValues,
+///          false if something went wrong and the copies could not be
+///          determined.
+bool getPotentiallyLoadedValues(Attributor &A, LoadInst &LI,
+                                SmallSetVector<Value *, 4> &PotentialValues,
+                                const AbstractAttribute &QueryingAA,
+                                bool &UsedAssumedInformation,
+                                bool OnlyExact = false);
 
 /// Collect all potential values of the one stored by \p SI into
 /// \p PotentialCopies. That is, the only copies that were made via the
-/// store are assumed to be known and all in \p PotentialCopies. Dependences
+/// store are assumed to be known and all are in \p PotentialCopies. Dependences
 /// onto \p QueryingAA are properly tracked, \p UsedAssumedInformation will
 /// inform the caller if assumed information was used.
 ///
@@ -205,7 +225,8 @@ bool getAssumedUnderlyingObjects(Attributor &A, const Value &Ptr,
 ///          determined.
 bool getPotentialCopiesOfStoredValue(
     Attributor &A, StoreInst &SI, SmallSetVector<Value *, 4> &PotentialCopies,
-    const AbstractAttribute &QueryingAA, bool &UsedAssumedInformation);
+    const AbstractAttribute &QueryingAA, bool &UsedAssumedInformation,
+    bool OnlyExact = false);
 
 /// Return true if \p IRP is readonly. This will query respective AAs that
 /// deduce the information and introduce dependences for \p QueryingAA.
@@ -1824,23 +1845,24 @@ public:
   /// This method will evaluate \p Pred on call sites and return
   /// true if \p Pred holds in every call sites. However, this is only possible
   /// all call sites are known, hence the function has internal linkage.
-  /// If true is returned, \p AllCallSitesKnown is set if all possible call
-  /// sites of the function have been visited.
+  /// If true is returned, \p UsedAssumedInformation is set if assumed
+  /// information was used to skip or simplify potential call sites.
   bool checkForAllCallSites(function_ref<bool(AbstractCallSite)> Pred,
                             const AbstractAttribute &QueryingAA,
-                            bool RequireAllCallSites, bool &AllCallSitesKnown);
+                            bool RequireAllCallSites,
+                            bool &UsedAssumedInformation);
 
   /// Check \p Pred on all call sites of \p Fn.
   ///
   /// This method will evaluate \p Pred on call sites and return
   /// true if \p Pred holds in every call sites. However, this is only possible
   /// all call sites are known, hence the function has internal linkage.
-  /// If true is returned, \p AllCallSitesKnown is set if all possible call
-  /// sites of the function have been visited.
+  /// If true is returned, \p UsedAssumedInformation is set if assumed
+  /// information was used to skip or simplify potential call sites.
   bool checkForAllCallSites(function_ref<bool(AbstractCallSite)> Pred,
                             const Function &Fn, bool RequireAllCallSites,
                             const AbstractAttribute *QueryingAA,
-                            bool &AllCallSitesKnown);
+                            bool &UsedAssumedInformation);
 
   /// Check \p Pred on all values potentially returned by \p F.
   ///
@@ -1858,6 +1880,19 @@ public:
   /// This is the context insensitive version of the method above.
   bool checkForAllReturnedValues(function_ref<bool(Value &)> Pred,
                                  const AbstractAttribute &QueryingAA);
+
+  /// Check \p Pred on all instructions in \p Fn with an opcode present in
+  /// \p Opcodes.
+  ///
+  /// This method will evaluate \p Pred on all instructions with an opcode
+  /// present in \p Opcode and return true if \p Pred holds on all of them.
+  bool checkForAllInstructions(function_ref<bool(Instruction &)> Pred,
+                               const Function *Fn,
+                               const AbstractAttribute &QueryingAA,
+                               const ArrayRef<unsigned> &Opcodes,
+                               bool &UsedAssumedInformation,
+                               bool CheckBBLivenessOnly = false,
+                               bool CheckPotentiallyDead = false);
 
   /// Check \p Pred on all instructions with an opcode present in \p Opcodes.
   ///
@@ -4792,21 +4827,55 @@ struct AAPointerInfo : public AbstractAttribute {
   /// See AbstractAttribute::getIdAddr()
   const char *getIdAddr() const override { return &ID; }
 
-  /// Call \p CB on all accesses that might interfere with \p LI and return true
-  /// if all such accesses were known and the callback returned true for all of
-  /// them, false otherwise.
-  virtual bool forallInterferingAccesses(
-      LoadInst &LI, function_ref<bool(const Access &, bool)> CB) const = 0;
-  virtual bool forallInterferingAccesses(
-      StoreInst &SI, function_ref<bool(const Access &, bool)> CB) const = 0;
+  /// Helper to represent an access offset and size, with logic to deal with
+  /// uncertainty and check for overlapping accesses.
+  struct OffsetAndSize : public std::pair<int64_t, int64_t> {
+    using BaseTy = std::pair<int64_t, int64_t>;
+    OffsetAndSize(int64_t Offset, int64_t Size) : BaseTy(Offset, Size) {}
+    OffsetAndSize(const BaseTy &P) : BaseTy(P) {}
+    int64_t getOffset() const { return first; }
+    int64_t getSize() const { return second; }
+    static OffsetAndSize getUnknown() {
+      return OffsetAndSize(Unknown, Unknown);
+    }
 
-  /// Call \p CB on all write accesses that might interfere with \p LI and
+    /// Return true if offset or size are unknown.
+    bool offsetOrSizeAreUnknown() const {
+      return getOffset() == OffsetAndSize::Unknown ||
+             getSize() == OffsetAndSize::Unknown;
+    }
+
+    /// Return true if this offset and size pair might describe an address that
+    /// overlaps with \p OAS.
+    bool mayOverlap(const OffsetAndSize &OAS) const {
+      // Any unknown value and we are giving up -> overlap.
+      if (offsetOrSizeAreUnknown() || OAS.offsetOrSizeAreUnknown())
+        return true;
+
+      // Check if one offset point is in the other interval [offset,
+      // offset+size].
+      return OAS.getOffset() + OAS.getSize() > getOffset() &&
+             OAS.getOffset() < getOffset() + getSize();
+    }
+
+    /// Constant used to represent unknown offset or sizes.
+    static constexpr int64_t Unknown = 1 << 31;
+  };
+
+  /// Call \p CB on all accesses that might interfere with \p OAS and return
+  /// true if all such accesses were known and the callback returned true for
+  /// all of them, false otherwise. An access interferes with an offset-size
+  /// pair if it might read or write that memory region.
+  virtual bool forallInterferingAccesses(
+      OffsetAndSize OAS, function_ref<bool(const Access &, bool)> CB) const = 0;
+
+  /// Call \p CB on all accesses that might interfere with \p I and
   /// return true if all such accesses were known and the callback returned true
   /// for all of them, false otherwise. In contrast to forallInterferingAccesses
   /// this function will perform reasoning to exclude write accesses that cannot
   /// affect the load even if they on the surface look as if they would.
-  virtual bool forallInterferingWrites(
-      Attributor &A, const AbstractAttribute &QueryingAA, LoadInst &LI,
+  virtual bool forallInterferingAccesses(
+      Attributor &A, const AbstractAttribute &QueryingAA, Instruction &I,
       function_ref<bool(const Access &, bool)> CB) const = 0;
 
   /// This function should return true if the type of the \p AA is AAPointerInfo

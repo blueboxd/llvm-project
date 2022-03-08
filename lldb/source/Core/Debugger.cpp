@@ -384,6 +384,16 @@ bool Debugger::GetUseAutosuggestion() const {
       nullptr, idx, g_debugger_properties[idx].default_uint_value != 0);
 }
 
+llvm::StringRef Debugger::GetAutosuggestionAnsiPrefix() const {
+  const uint32_t idx = ePropertyShowAutosuggestionAnsiPrefix;
+  return m_collection_sp->GetPropertyAtIndexAsString(nullptr, idx, "");
+}
+
+llvm::StringRef Debugger::GetAutosuggestionAnsiSuffix() const {
+  const uint32_t idx = ePropertyShowAutosuggestionAnsiSuffix;
+  return m_collection_sp->GetPropertyAtIndexAsString(nullptr, idx, "");
+}
+
 bool Debugger::GetUseSourceCache() const {
   const uint32_t idx = ePropertyUseSourceCache;
   return m_collection_sp->GetPropertyAtIndexAsBoolean(
@@ -1576,7 +1586,7 @@ void Debugger::CancelForwardEvents(const ListenerSP &listener_sp) {
   m_forward_listener_sp.reset();
 }
 
-void Debugger::DefaultEventHandler() {
+lldb::thread_result_t Debugger::DefaultEventHandler() {
   ListenerSP listener_sp(GetListener());
   ConstString broadcaster_class_target(Target::GetStaticBroadcasterClass());
   ConstString broadcaster_class_process(Process::GetStaticBroadcasterClass());
@@ -1662,10 +1672,6 @@ void Debugger::DefaultEventHandler() {
       }
     }
   }
-}
-
-lldb::thread_result_t Debugger::EventHandlerThread(lldb::thread_arg_t arg) {
-  ((Debugger *)arg)->DefaultEventHandler();
   return {};
 }
 
@@ -1687,8 +1693,9 @@ bool Debugger::StartEventHandlerThread() {
 
     // Use larger 8MB stack for this thread
     llvm::Expected<HostThread> event_handler_thread =
-        ThreadLauncher::LaunchThread(thread_name, EventHandlerThread, this,
-                                     g_debugger_event_thread_stack_bytes);
+        ThreadLauncher::LaunchThread(
+            thread_name, [this] { return DefaultEventHandler(); },
+            g_debugger_event_thread_stack_bytes);
 
     if (event_handler_thread) {
       m_event_handler_thread = *event_handler_thread;
@@ -1716,10 +1723,9 @@ void Debugger::StopEventHandlerThread() {
   }
 }
 
-lldb::thread_result_t Debugger::IOHandlerThread(lldb::thread_arg_t arg) {
-  Debugger *debugger = (Debugger *)arg;
-  debugger->RunIOHandlers();
-  debugger->StopEventHandlerThread();
+lldb::thread_result_t Debugger::IOHandlerThread() {
+  RunIOHandlers();
+  StopEventHandlerThread();
   return {};
 }
 
@@ -1728,7 +1734,7 @@ bool Debugger::HasIOHandlerThread() { return m_io_handler_thread.IsJoinable(); }
 bool Debugger::StartIOHandlerThread() {
   if (!m_io_handler_thread.IsJoinable()) {
     llvm::Expected<HostThread> io_handler_thread = ThreadLauncher::LaunchThread(
-        "lldb.debugger.io-handler", IOHandlerThread, this,
+        "lldb.debugger.io-handler", [this] { return IOHandlerThread(); },
         8 * 1024 * 1024); // Use larger 8MB stack for this thread
     if (io_handler_thread) {
       m_io_handler_thread = *io_handler_thread;
