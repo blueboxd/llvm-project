@@ -127,7 +127,7 @@ static void genRuntimeSetBounds(fir::FirOpBuilder &builder, mlir::Location loc,
   llvm::SmallVector<mlir::Value> args{box.getAddr(), dimIndex, lowerBound,
                                       upperBound};
   llvm::SmallVector<mlir::Value> operands;
-  for (auto [fst, snd] : llvm::zip(args, callee.getType().getInputs()))
+  for (auto [fst, snd] : llvm::zip(args, callee.getFunctionType().getInputs()))
     operands.emplace_back(builder.createConvert(loc, snd, fst));
   builder.create<fir::CallOp>(loc, callee, operands);
 }
@@ -144,7 +144,7 @@ static void genRuntimeInitCharacter(fir::FirOpBuilder &builder,
                 loc, builder)
           : fir::runtime::getRuntimeFunc<mkRTKey(AllocatableInitCharacter)>(
                 loc, builder);
-  llvm::ArrayRef<mlir::Type> inputTypes = callee.getType().getInputs();
+  llvm::ArrayRef<mlir::Type> inputTypes = callee.getFunctionType().getInputs();
   if (inputTypes.size() != 5)
     fir::emitFatalError(
         loc, "AllocatableInitCharacter runtime interface not as expected");
@@ -175,7 +175,7 @@ static mlir::Value genRuntimeAllocate(fir::FirOpBuilder &builder,
       box.getAddr(), errorManager.hasStat, errorManager.errMsgAddr,
       errorManager.sourceFile, errorManager.sourceLine};
   llvm::SmallVector<mlir::Value> operands;
-  for (auto [fst, snd] : llvm::zip(args, callee.getType().getInputs()))
+  for (auto [fst, snd] : llvm::zip(args, callee.getFunctionType().getInputs()))
     operands.emplace_back(builder.createConvert(loc, snd, fst));
   return builder.create<fir::CallOp>(loc, callee, operands).getResult(0);
 }
@@ -197,7 +197,7 @@ static mlir::Value genRuntimeDeallocate(fir::FirOpBuilder &builder,
       boxAddress, errorManager.hasStat, errorManager.errMsgAddr,
       errorManager.sourceFile, errorManager.sourceLine};
   llvm::SmallVector<mlir::Value> operands;
-  for (auto [fst, snd] : llvm::zip(args, callee.getType().getInputs()))
+  for (auto [fst, snd] : llvm::zip(args, callee.getFunctionType().getInputs()))
     operands.emplace_back(builder.createConvert(loc, snd, fst));
   return builder.create<fir::CallOp>(loc, callee, operands).getResult(0);
 }
@@ -665,4 +665,34 @@ fir::MutableBoxValue Fortran::lower::createMutableBox(
   if (!var.isGlobal() && !Fortran::semantics::IsDummy(var.getSymbol()))
     fir::factory::disassociateMutableBox(builder, loc, box);
   return box;
+}
+
+//===----------------------------------------------------------------------===//
+// MutableBoxValue reading interface implementation
+//===----------------------------------------------------------------------===//
+
+static bool
+isArraySectionWithoutVectorSubscript(const Fortran::lower::SomeExpr &expr) {
+  return expr.Rank() > 0 && Fortran::evaluate::IsVariable(expr) &&
+         !Fortran::evaluate::UnwrapWholeSymbolDataRef(expr) &&
+         !Fortran::evaluate::HasVectorSubscript(expr);
+}
+
+void Fortran::lower::associateMutableBox(
+    Fortran::lower::AbstractConverter &converter, mlir::Location loc,
+    const fir::MutableBoxValue &box, const Fortran::lower::SomeExpr &source,
+    mlir::ValueRange lbounds, Fortran::lower::StatementContext &stmtCtx) {
+  fir::FirOpBuilder &builder = converter.getFirOpBuilder();
+  if (Fortran::evaluate::UnwrapExpr<Fortran::evaluate::NullPointer>(source)) {
+    fir::factory::disassociateMutableBox(builder, loc, box);
+    return;
+  }
+  // The right hand side must not be evaluated in a temp.
+  // Array sections can be described by fir.box without making a temp.
+  // Otherwise, do not generate a fir.box to avoid having to later use a
+  // fir.rebox to implement the pointer association.
+  fir::ExtendedValue rhs = isArraySectionWithoutVectorSubscript(source)
+                               ? converter.genExprBox(source, stmtCtx, loc)
+                               : converter.genExprAddr(source, stmtCtx);
+  fir::factory::associateMutableBox(builder, loc, box, rhs, lbounds);
 }

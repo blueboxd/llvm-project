@@ -34,6 +34,7 @@ def LinalgContractionOpInterface : OpInterface<"ContractionOpInterface"> {
   }];
   let cppNamespace = "::mlir::linalg";
   let verify = [{ return detail::verifyContractionInterface($_op); }];
+  let verifyWithRegions = 1;
   let methods = [
     InterfaceMethod<
     /*desc=*/"Returns the left-hand side operand.",
@@ -1034,7 +1035,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
           $_op->getAttrs());
         for (Region &r : $_op->getRegions())
           r.cloneInto(state.addRegion(), bvm);
-        return b.createOperation(state);
+        return b.create(state);
       }]
     >,
     InterfaceMethod<
@@ -1055,7 +1056,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
           $_op->getAttrs());
         for (Region &r : $_op->getRegions())
           r.cloneInto(state.addRegion(), bvm);
-        return b.createOperation(state);
+        return b.create(state);
       }]
     >,
     InterfaceMethod<
@@ -1076,7 +1077,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
           $_op->getAttrs());
         for (size_t cnt = 0, e = $_op->getNumRegions(); cnt < e; ++cnt)
           state.addRegion();
-        return b.createOperation(state);
+        return b.create(state);
       }]
     >,
     StaticInterfaceMethod<
@@ -1089,6 +1090,19 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
       /*methodName=*/"getRegionBuilder",
       (ins),
       [{ return ConcreteOp::getRegionBuilder(); }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Return true if all the indexing maps are projected permutations.
+        Otherwise return false.
+      }],
+      /*retTy=*/"bool",
+      /*methodName=*/"hasOnlyProjectedPermutations",
+      (ins),
+      [{
+        return llvm::all_of($_op.getIndexingMaps(),
+                            [](AffineMap map) { return map.isProjectedPermutation(); });
+      }]
     >
   ];
 
@@ -1117,6 +1131,9 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
     LogicalResult reifyResultShapes(OpBuilder &b,
         ReifiedRankedShapedTypeDims &reifiedReturnShapes);
 
+    // TODO: Remove once prefixing is flipped.
+    ArrayAttr getIteratorTypes() { return iterator_types(); }
+
     //========================================================================//
     // Helper functions to mutate the `operand_segment_sizes` attribute.
     // These are useful when cloning and changing operand types.
@@ -1136,6 +1153,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
   }];
 
   let verify = [{ return detail::verifyStructuredOpInterface($_op); }];
+  let verifyWithRegions = 1;
 }
 
 #endif // LINALG_IR_LINALGINTERFACES

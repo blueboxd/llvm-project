@@ -6,7 +6,7 @@ class Inner {
   class X;
   void Fn (X &, Y &); // #2
 };
-// CHECK-DAG: define dso_local void @_ZN5OuterW3FOO5Inner2FnERNS1_1XERNS_S0_1YE(
+// CHECK-DAG: void @_ZN5OuterW3FOO5Inner2FnERNS1_1XERNS_S0_1YE(
 void Inner::Fn (X &, Y &) {}
 }
 

@@ -223,6 +223,11 @@ public:
   /// Returns the size of this defined addressable.
   size_t getSize() const { return Size; }
 
+  /// Returns the address range of this defined addressable.
+  orc::ExecutorAddrRange getRange() const {
+    return orc::ExecutorAddrRange(getAddress(), getSize());
+  }
+
   /// Get the content for this block. Block must not be a zero-fill block.
   ArrayRef<char> getContent() const {
     assert(Data && "Block does not contain content");
@@ -574,6 +579,11 @@ public:
     assert((Offset + Size <= static_cast<const Block &>(*Base).getSize()) &&
            "Symbol size cannot extend past the end of its containing block");
     this->Size = Size;
+  }
+
+  /// Returns the address range of this symbol.
+  orc::ExecutorAddrRange getRange() const {
+    return orc::ExecutorAddrRange(getAddress(), getSize());
   }
 
   /// Returns true if this symbol is backed by a zero-fill block.
@@ -1736,6 +1746,9 @@ Error markAllSymbolsLive(LinkGraph &G);
 /// Create an out of range error for the given edge in the given block.
 Error makeTargetOutOfRangeError(const LinkGraph &G, const Block &B,
                                 const Edge &E);
+
+Error makeAlignmentError(llvm::orc::ExecutorAddr Loc, uint64_t Value, int N,
+                         const Edge &E);
 
 /// Base case for edge-visitors where the visitor-list is empty.
 inline void visitEdge(LinkGraph &G, Block *B, Edge &E) {}

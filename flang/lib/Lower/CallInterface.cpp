@@ -215,7 +215,11 @@ void Fortran::lower::CallerInterface::walkResultLengths(
             dynamicType.GetCharLength())
       visitor(toEvExpr(*length));
   } else if (dynamicType.category() == common::TypeCategory::Derived) {
-    TODO(converter.getCurrentLocation(), "walkResultLengths derived type");
+    const Fortran::semantics::DerivedTypeSpec &derivedTypeSpec =
+        dynamicType.GetDerivedTypeSpec();
+    if (Fortran::semantics::CountLenParameters(derivedTypeSpec) > 0)
+      TODO(converter.getCurrentLocation(),
+           "function result with derived type length parameters");
   }
 }
 
@@ -235,11 +239,10 @@ void Fortran::lower::CallerInterface::walkResultExtents(
     ExprVisitor visitor) const {
   // Walk directly the result symbol shape (the characteristic shape may contain
   // descriptor inquiries to it that would fail to lower on the caller side).
-  const Fortran::semantics::Symbol *interfaceSymbol =
-      procRef.proc().GetInterfaceSymbol();
-  if (interfaceSymbol) {
-    const Fortran::semantics::Symbol &result =
-        interfaceSymbol->get<Fortran::semantics::SubprogramDetails>().result();
+  const Fortran::semantics::SubprogramDetails *interfaceDetails =
+      getInterfaceDetails();
+  if (interfaceDetails) {
+    const Fortran::semantics::Symbol &result = interfaceDetails->result();
     if (const auto *objectDetails =
             result.detailsIf<Fortran::semantics::ObjectEntityDetails>())
       if (objectDetails->shape().IsExplicitShape())
@@ -259,7 +262,7 @@ bool Fortran::lower::CallerInterface::mustMapInterfaceSymbols() const {
   const std::optional<Fortran::evaluate::characteristics::FunctionResult>
       &result = characteristic->functionResult;
   if (!result || result->CanBeReturnedViaImplicitInterface() ||
-      !procRef.proc().GetInterfaceSymbol())
+      !getInterfaceDetails())
     return false;
   bool allResultSpecExprConstant = true;
   auto visitor = [&](const Fortran::lower::SomeExpr &e) {
@@ -273,12 +276,13 @@ bool Fortran::lower::CallerInterface::mustMapInterfaceSymbols() const {
 mlir::Value Fortran::lower::CallerInterface::getArgumentValue(
     const semantics::Symbol &sym) const {
   mlir::Location loc = converter.getCurrentLocation();
-  const Fortran::semantics::Symbol *iface = procRef.proc().GetInterfaceSymbol();
-  if (!iface)
+  const Fortran::semantics::SubprogramDetails *ifaceDetails =
+      getInterfaceDetails();
+  if (!ifaceDetails)
     fir::emitFatalError(
         loc, "mapping actual and dummy arguments requires an interface");
   const std::vector<Fortran::semantics::Symbol *> &dummies =
-      iface->get<semantics::SubprogramDetails>().dummyArgs();
+      ifaceDetails->dummyArgs();
   auto it = std::find(dummies.begin(), dummies.end(), &sym);
   if (it == dummies.end())
     fir::emitFatalError(loc, "symbol is not a dummy in this call");
@@ -296,11 +300,21 @@ mlir::Type Fortran::lower::CallerInterface::getResultStorageType() const {
 const Fortran::semantics::Symbol &
 Fortran::lower::CallerInterface::getResultSymbol() const {
   mlir::Location loc = converter.getCurrentLocation();
-  const Fortran::semantics::Symbol *iface = procRef.proc().GetInterfaceSymbol();
-  if (!iface)
+  const Fortran::semantics::SubprogramDetails *ifaceDetails =
+      getInterfaceDetails();
+  if (!ifaceDetails)
     fir::emitFatalError(
         loc, "mapping actual and dummy arguments requires an interface");
-  return iface->get<semantics::SubprogramDetails>().result();
+  return ifaceDetails->result();
+}
+
+const Fortran::semantics::SubprogramDetails *
+Fortran::lower::CallerInterface::getInterfaceDetails() const {
+  if (const Fortran::semantics::Symbol *iface =
+          procRef.proc().GetInterfaceSymbol())
+    return iface->GetUltimate()
+        .detailsIf<Fortran::semantics::SubprogramDetails>();
+  return nullptr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -595,7 +609,7 @@ public:
   }
 
   void appendHostAssocTupleArg(mlir::Type tupTy) {
-    MLIRContext *ctxt = tupTy.getContext();
+    mlir::MLIRContext *ctxt = tupTy.getContext();
     addFirOperand(tupTy, nextPassedArgPosition(), Property::BaseAddress,
                   {mlir::NamedAttribute{
                       mlir::StringAttr::get(ctxt, fir::getHostAssocAttrName()),
@@ -759,8 +773,10 @@ private:
     Fortran::common::TypeCategory cat = dynamicType.category();
     // DERIVED
     if (cat == Fortran::common::TypeCategory::Derived) {
-      TODO(interface.converter.getCurrentLocation(),
-           "[translateDynamicType] Derived types");
+      if (dynamicType.IsPolymorphic())
+        TODO(interface.converter.getCurrentLocation(),
+             "[translateDynamicType] polymorphic types");
+      return getConverter().genType(dynamicType.GetDerivedTypeSpec());
     }
     // CHARACTER with compile time constant length.
     if (cat == Fortran::common::TypeCategory::Character)
@@ -830,6 +846,8 @@ private:
       addPassedArg(PassEntityBy::MutableBox, entity, characteristics);
     } else if (dummyRequiresBox(obj)) {
       // Pass as fir.box
+      if (isValueAttr)
+        TODO(loc, "assumed shape dummy argument with VALUE attribute");
       addFirOperand(boxType, nextPassedArgPosition(), Property::Box, attrs);
       addPassedArg(PassEntityBy::Box, entity, characteristics);
     } else if (dynamicType.category() ==

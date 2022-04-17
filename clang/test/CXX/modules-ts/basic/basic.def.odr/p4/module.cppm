@@ -5,7 +5,8 @@
 // CHECK-DAG: @_ZL24static_var_global_module = internal global
 // CHECK-DAG: @_ZL23const_var_global_module = internal constant
 //
-// For ABI compatibility, these symbols do not include the module name.
+// With strong-ownership, the module is mangled into exported symbols
+// that are attached to a named module.
 // CHECK-DAG: @_ZW6Module19extern_var_exported = external {{(dso_local )?}}global
 // FIXME: Should this be 'weak_odr global'? Presumably it must be, since we
 // can discard this global and its initializer (if any), and other TUs are not

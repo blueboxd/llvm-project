@@ -28,11 +28,14 @@ declare void @llvm.lifetime.end.p5i8(i64 immarg, i8 addrspace(5)* nocapture) #1
 ; Function Attrs: norecurse
 define internal fastcc void @svm_node_closure_bsdf(%struct.ShaderData addrspace(1)* %sd, float* %stack, <4 x i32> %node, i32* %offset, i32 %0, i8 %trunc, float %1, float %2, float %mul80, i1 %cmp412.old, <4 x i32> %3, float %4, i32 %5, i1 %cmp440, i1 %cmp442, i1 %or.cond1306, float %.op, %struct.ShaderClosure addrspace(1)* %arrayidx.i.i2202, %struct.ShaderClosure addrspace(1)* %retval.0.i.i22089, %struct.ShaderClosure addrspace(1)* %retval.1.i221310, i1 %cmp575, i32 addrspace(1)* %num_closure_left.i2215, i32 %6, i1 %cmp.i2216, i32 %7, i64 %idx.ext.i2223, i32 %sub5.i2221) #2 {
 ; GCN-LABEL: {{^}}svm_node_closure_bsdf:
-; GCN-NOT: s30,
-; GCN-NOT: s31,
+; GCN-DAG: v_writelane_b32 [[CSR_VGPR:v[0-9]+]], s30,
+; GCN-DAG: v_writelane_b32 [[CSR_VGPR]], s31,
+; GCN: s_movk_i32 s30, 0x60
+; GCN-NOT: s31
+; GCN-DAG: v_readlane_b32 s31, [[CSR_VGPR]],
+; GCN-DAG: v_readlane_b32 s30, [[CSR_VGPR]],
 ; GCN: s_waitcnt vmcnt(0)
 ; GCN: s_setpc_b64 s[30:31]
-; GCN: .size   svm_node_closure_bsdf
 entry:
   %8 = extractelement <4 x i32> %node, i64 0
   %cmp.i.not = icmp eq i32 undef, 0
@@ -44,11 +47,20 @@ cond.true:                                        ; preds = %entry
   br i1 %phi.cmp, label %common.ret, label %cond.true20
 
 cond.true20:                                      ; preds = %cond.true
-  %trunc1 = trunc i32 %0 to i8
-  switch i8 %trunc, label %common.ret [
-    i8 44, label %sw.bb
-    i8 0, label %if.end.i.i2285
-  ]
+  %v = zext i8 %trunc to i32
+  br label %NodeBlock
+
+NodeBlock:                                        ; preds = %cond.true20
+  %Pivot = icmp slt i32 %v, 44
+  br i1 %Pivot, label %LeafBlock, label %LeafBlock1
+
+LeafBlock1:                                       ; preds = %NodeBlock
+  %SwitchLeaf2 = icmp eq i32 %v, 44
+  br i1 %SwitchLeaf2, label %sw.bb, label %NewDefault
+
+LeafBlock:                                        ; preds = %NodeBlock
+  %SwitchLeaf = icmp eq i32 %v, 0
+  br i1 %SwitchLeaf, label %if.end.i.i2285, label %NewDefault
 
 sw.bb:                                            ; preds = %cond.true20
   %10 = load float, float* null, align 4
@@ -73,7 +85,12 @@ common.ret.critedge:                              ; preds = %entry
   store i32 0, i32* null, align 4
   br label %common.ret
 
-common.ret:                                       ; preds = %if.end.i.i2285, %if.end627.sink.split, %cond.end579, %bsdf_alloc.exit2188, %if.end511, %common.ret.critedge, %if.then443, %sw.bb, %cond.true20, %cond.true
+NewDefault:                                       ; preds = %LeafBlock1, %LeafBlock
+  %phi.store = phi i32 [0, %LeafBlock], [1, %LeafBlock1]
+  store i32 %phi.store, i32* null, align 4
+  br label %common.ret
+
+common.ret:                                       ; preds = %if.end.i.i2285, %if.end627.sink.split, %cond.end579, %bsdf_alloc.exit2188, %if.end511, %common.ret.critedge, %if.then443, %sw.bb, %NewDefault, %cond.true
   ret void
 
 if.end511:                                        ; preds = %if.then443
@@ -167,10 +184,10 @@ sw.bb10:
 ; GCN-DAG: v_writelane_b32 [[CSR_VGPR:v[0-9]+]], s30,
 ; GCN-DAG: v_writelane_b32 [[CSR_VGPR]], s31,
 ; GCN: s_swappc_b64 s[30:31]
-; GCN-DAG: v_readlane_b32 s4, [[CSR_VGPR]],
-; GCN-DAG: v_readlane_b32 s5, [[CSR_VGPR]],
+; GCN-DAG: v_readlane_b32 s31, [[CSR_VGPR]],
+; GCN-DAG: v_readlane_b32 s30, [[CSR_VGPR]],
 ; GCN: s_waitcnt vmcnt(0)
-; GCN: s_setpc_b64 s[4:5]
+; GCN: s_setpc_b64 s[30:31]
   call fastcc void @svm_node_closure_bsdf(%struct.ShaderData addrspace(1)* null, float* null, <4 x i32> zeroinitializer, i32* null, i32 undef, i8 undef, float undef, float undef, float undef, i1 undef, <4 x i32> undef, float undef, i32 undef, i1 undef, i1 undef, i1 undef, float undef, %struct.ShaderClosure addrspace(1)* undef, %struct.ShaderClosure addrspace(1)* undef, %struct.ShaderClosure addrspace(1)* undef, i1 undef, i32 addrspace(1)* undef, i32 undef, i1 undef, i32 undef, i64 undef, i32 undef)
   ret void
 }

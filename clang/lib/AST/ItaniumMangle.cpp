@@ -130,8 +130,6 @@ public:
 
   void mangleLambdaSig(const CXXRecordDecl *Lambda, raw_ostream &) override;
 
-  void mangleModuleInitializer(const Module *Module, raw_ostream &) override;
-
   bool getNextDiscriminator(const NamedDecl *ND, unsigned &disc) {
     // Lambda closure types are already numbered.
     if (isLambda(ND))
@@ -440,7 +438,7 @@ public:
   void mangleType(QualType T);
   void mangleNameOrStandardSubstitution(const NamedDecl *ND);
   void mangleLambdaSig(const CXXRecordDecl *Lambda);
-  void mangleModuleNamePrefix(StringRef Name, bool IsPartition = false);
+  void mangleModuleNamePrefix(StringRef Name);
 
 private:
 
@@ -1053,8 +1051,8 @@ void CXXNameMangler::mangleModuleName(const NamedDecl *ND) {
 //		 ::= <module-name> <module-subname>
 //	 	 ::= <substitution>
 // <module-subname> ::= W <source-name>
-//		    ::= W P <source-name>
-void CXXNameMangler::mangleModuleNamePrefix(StringRef Name, bool IsPartition) {
+//		    ::= W P <source-name> # not (yet) needed
+void CXXNameMangler::mangleModuleNamePrefix(StringRef Name) {
   //  <substitution> ::= S <seq-id> _
   auto It = ModuleSubstitutions.find(Name);
   if (It != ModuleSubstitutions.end()) {
@@ -1068,14 +1066,10 @@ void CXXNameMangler::mangleModuleNamePrefix(StringRef Name, bool IsPartition) {
   auto Parts = Name.rsplit('.');
   if (Parts.second.empty())
     Parts.second = Parts.first;
-  else {
-    mangleModuleNamePrefix(Parts.first, IsPartition);
-    IsPartition = false;
-  }
+  else
+    mangleModuleNamePrefix(Parts.first);
 
   Out << 'W';
-  if (IsPartition)
-    Out << 'P';
   Out << Parts.second.size() << Parts.second;
   ModuleSubstitutions.insert({Name, SeqID++});
 }
@@ -2213,6 +2207,7 @@ void CXXNameMangler::mangleType(TemplateName TN) {
     TD = TN.getAsQualifiedTemplateName()->getTemplateDecl();
     goto HaveDecl;
 
+  case TemplateName::UsingTemplate:
   case TemplateName::Template:
     TD = TN.getAsTemplateDecl();
     goto HaveDecl;
@@ -2291,6 +2286,7 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
   case Type::FunctionNoProto:
   case Type::Paren:
   case Type::Attributed:
+  case Type::BTFTagAttributed:
   case Type::Auto:
   case Type::DeducedTemplateSpecialization:
   case Type::PackExpansion:
@@ -2386,6 +2382,12 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
       //   template <class U...> void foo(decltype(T<U>::foo) x...);
       // };
       Out << "_SUBSTPACK_";
+      break;
+    }
+    case TemplateName::UsingTemplate: {
+      TemplateDecl *TD = TN.getAsTemplateDecl();
+      assert(TD && !isa<TemplateTemplateParmDecl>(TD));
+      mangleSourceNameWithAbiTags(TD);
       break;
     }
     }
@@ -5550,6 +5552,47 @@ static QualType getLValueType(ASTContext &Ctx, const APValue &LV) {
   return T;
 }
 
+static IdentifierInfo *getUnionInitName(SourceLocation UnionLoc,
+                                        DiagnosticsEngine &Diags,
+                                        const FieldDecl *FD) {
+  // According to:
+  // http://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling.anonymous
+  // For the purposes of mangling, the name of an anonymous union is considered
+  // to be the name of the first named data member found by a pre-order,
+  // depth-first, declaration-order walk of the data members of the anonymous
+  // union.
+
+  if (FD->getIdentifier())
+    return FD->getIdentifier();
+
+  // The only cases where the identifer of a FieldDecl would be blank is if the
+  // field represents an anonymous record type or if it is an unnamed bitfield.
+  // There is no type to descend into in the case of a bitfield, so we can just
+  // return nullptr in that case.
+  if (FD->isBitField())
+    return nullptr;
+  const CXXRecordDecl *RD = FD->getType()->getAsCXXRecordDecl();
+
+  // Consider only the fields in declaration order, searched depth-first.  We
+  // don't care about the active member of the union, as all we are doing is
+  // looking for a valid name. We also don't check bases, due to guidance from
+  // the Itanium ABI folks.
+  for (const FieldDecl *RDField : RD->fields()) {
+    if (IdentifierInfo *II = getUnionInitName(UnionLoc, Diags, RDField))
+      return II;
+  }
+
+  // According to the Itanium ABI: If there is no such data member (i.e., if all
+  // of the data members in the union are unnamed), then there is no way for a
+  // program to refer to the anonymous union, and there is therefore no need to
+  // mangle its name. However, we should diagnose this anyway.
+  unsigned DiagID = Diags.getCustomDiagID(
+      DiagnosticsEngine::Error, "cannot mangle this unnamed union NTTP yet");
+  Diags.Report(UnionLoc, DiagID);
+
+  return nullptr;
+}
+
 void CXXNameMangler::mangleValueInTemplateArg(QualType T, const APValue &V,
                                               bool TopLevel,
                                               bool NeedExactType) {
@@ -5633,7 +5676,10 @@ void CXXNameMangler::mangleValueInTemplateArg(QualType T, const APValue &V,
     mangleType(T);
     if (!isZeroInitialized(T, V)) {
       Out << "di";
-      mangleSourceName(FD->getIdentifier());
+      IdentifierInfo *II = (getUnionInitName(
+          T->getAsCXXRecordDecl()->getLocation(), Context.getDiags(), FD));
+      if (II)
+        mangleSourceName(II);
       mangleValueInTemplateArg(FD->getType(), V.getUnionValue(), false);
     }
     Out << 'E';
@@ -6462,19 +6508,6 @@ void ItaniumMangleContextImpl::mangleLambdaSig(const CXXRecordDecl *Lambda,
                                                raw_ostream &Out) {
   CXXNameMangler Mangler(*this, Out);
   Mangler.mangleLambdaSig(Lambda);
-}
-
-void ItaniumMangleContextImpl::mangleModuleInitializer(const Module *M,
-                                                       raw_ostream &Out) {
-  CXXNameMangler Mangler(*this, Out);
-  Mangler.getStream() << "_ZGI";
-  Mangler.mangleModuleNamePrefix(M->getPrimaryModuleInterfaceName());
-  if (M->isModulePartition()) {
-    auto Partition = M->Name.find(':');
-    Mangler.mangleModuleNamePrefix(
-        StringRef(&M->Name[Partition + 1], M->Name.size() - Partition - 1),
-        /*IsPartition*/ true);
-  }
 }
 
 ItaniumMangleContext *ItaniumMangleContext::create(ASTContext &Context,

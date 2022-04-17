@@ -14,4 +14,3 @@ void Module() {
 // CHECK-DAG: @_ZW3Foo7Module2v(
 void Module2() {
 }
-
