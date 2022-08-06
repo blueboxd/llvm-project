@@ -124,11 +124,9 @@ PlatformWindows::PlatformWindows(bool is_host) : RemoteAwarePlatform(is_host) {
     if (spec.IsValid())
       m_supported_architectures.push_back(spec);
   };
-  AddArch(ArchSpec("i686-pc-windows"));
   AddArch(HostInfo::GetArchitecture(HostInfo::eArchKindDefault));
   AddArch(HostInfo::GetArchitecture(HostInfo::eArchKind32));
   AddArch(HostInfo::GetArchitecture(HostInfo::eArchKind64));
-  AddArch(ArchSpec("i386-pc-windows"));
 }
 
 Status PlatformWindows::ConnectRemote(Args &args) {
@@ -651,7 +649,7 @@ _Static_assert(sizeof(struct __lldb_LoadLibraryResult) <= 3 * sizeof(void *),
 
 void * __lldb_LoadLibraryHelper(const wchar_t *name, const wchar_t *paths,
                                 __lldb_LoadLibraryResult *result) {
-  for (const wchar_t *path = paths; path; ) {
+  for (const wchar_t *path = paths; path && *path; ) {
     (void)AddDllDirectory(path);
     path += wcslen(path) + 1;
   }

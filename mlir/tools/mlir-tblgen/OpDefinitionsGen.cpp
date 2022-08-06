@@ -430,6 +430,9 @@ private:
   // Generates getters for named successors.
   void genNamedSuccessorGetters();
 
+  // Generates the method to populate default attributes.
+  void genPopulateDefaultAttributes();
+
   // Generates builder methods for the operation.
   void genBuilder();
 
@@ -575,7 +578,8 @@ static void populateSubstitutions(const OpOrAdaptorHelper &emitHelper,
   // Populate substitutions for attributes.
   auto &op = emitHelper.getOp();
   for (const auto &namedAttr : op.getAttributes())
-    ctx.addSubst(namedAttr.name, emitHelper.getAttr(namedAttr.name).str());
+    ctx.addSubst(namedAttr.name,
+                 emitHelper.getOp().getGetterName(namedAttr.name) + "()");
 
   // Populate substitutions for named operands.
   for (int i = 0, e = op.getNumOperands(); i < e; ++i) {
@@ -823,6 +827,7 @@ OpEmitter::OpEmitter(const Operator &op,
   genAttrSetters();
   genOptionalAttrRemovers();
   genBuilder();
+  genPopulateDefaultAttributes();
   genParser();
   genPrinter();
   genVerifier();
@@ -1071,7 +1076,7 @@ void OpEmitter::genAttrGetters() {
           body << "    {" << name << "AttrName(),\n"
                << tgfmt(tmpl, &fctx.withSelf(name + "()")
                                    .withBuilder("odsBuilder")
-                                   .addSubst("_ctx", "ctx"))
+                                   .addSubst("_ctxt", "ctx"))
                << "}";
         },
         ",\n");
@@ -1587,6 +1592,45 @@ void OpEmitter::genUseOperandAsResultTypeCollectiveParamBuilder() {
        << llvm::join(resultTypes, ", ") << "});\n\n";
 }
 
+void OpEmitter::genPopulateDefaultAttributes() {
+  // All done if no attributes have default values.
+  if (llvm::all_of(op.getAttributes(), [](const NamedAttribute &named) {
+        return !named.attr.hasDefaultValue();
+      }))
+    return;
+
+  SmallVector<MethodParameter> paramList;
+  paramList.emplace_back("const ::mlir::RegisteredOperationName &", "opName");
+  paramList.emplace_back("::mlir::NamedAttrList &", "attributes");
+  auto *m = opClass.addStaticMethod("void", "populateDefaultAttrs", paramList);
+  ERROR_IF_PRUNED(m, "populateDefaultAttrs", op);
+  auto &body = m->body();
+  body.indent();
+
+  // Set default attributes that are unset.
+  body << "auto attrNames = opName.getAttributeNames();\n";
+  body << "::mlir::Builder " << odsBuilder
+       << "(attrNames.front().getContext());\n";
+  StringMap<int> attrIndex;
+  for (const auto &it : llvm::enumerate(emitHelper.getAttrMetadata())) {
+    attrIndex[it.value().first] = it.index();
+  }
+  for (const NamedAttribute &namedAttr : op.getAttributes()) {
+    auto &attr = namedAttr.attr;
+    if (!attr.hasDefaultValue())
+      continue;
+    auto index = attrIndex[namedAttr.name];
+    body << "if (!attributes.get(attrNames[" << index << "])) {\n";
+    FmtContext fctx;
+    fctx.withBuilder(odsBuilder);
+    std::string defaultValue = std::string(
+        tgfmt(attr.getConstBuilderTemplate(), &fctx, attr.getDefaultValue()));
+    body.indent() << formatv(" attributes.append(attrNames[{0}], {1});\n",
+                             index, defaultValue);
+    body.unindent() << "}\n";
+  }
+}
+
 void OpEmitter::genInferredTypeCollectiveParamBuilder() {
   SmallVector<MethodParameter> paramList;
   paramList.emplace_back("::mlir::OpBuilder &", "odsBuilder");
@@ -1631,7 +1675,7 @@ void OpEmitter::genInferredTypeCollectiveParamBuilder() {
 
   // Result types
   body << formatv(R"(
-  ::mlir::SmallVector<::mlir::Type, 2> inferredReturnTypes;
+  ::llvm::SmallVector<::mlir::Type, 2> inferredReturnTypes;
   if (::mlir::succeeded({0}::inferReturnTypes(odsBuilder.getContext(),
           {1}.location, operands,
           {1}.attributes.getDictionary({1}.getContext()),
@@ -1651,31 +1695,40 @@ void OpEmitter::genInferredTypeCollectiveParamBuilder() {
 }
 
 void OpEmitter::genUseOperandAsResultTypeSeparateParamBuilder() {
-  SmallVector<MethodParameter> paramList;
-  SmallVector<std::string, 4> resultNames;
-  llvm::StringSet<> inferredAttributes;
-  buildParamList(paramList, inferredAttributes, resultNames,
-                 TypeParamKind::None);
+  auto emit = [&](AttrParamKind attrType) {
+    SmallVector<MethodParameter> paramList;
+    SmallVector<std::string, 4> resultNames;
+    llvm::StringSet<> inferredAttributes;
+    buildParamList(paramList, inferredAttributes, resultNames,
+                   TypeParamKind::None, attrType);
 
-  auto *m = opClass.addStaticMethod("void", "build", std::move(paramList));
-  // If the builder is redundant, skip generating the method
-  if (!m)
-    return;
-  auto &body = m->body();
-  genCodeForAddingArgAndRegionForBuilder(body, inferredAttributes);
+    auto *m = opClass.addStaticMethod("void", "build", std::move(paramList));
+    // If the builder is redundant, skip generating the method
+    if (!m)
+      return;
+    auto &body = m->body();
+    genCodeForAddingArgAndRegionForBuilder(body, inferredAttributes,
+                                           /*isRawValueAttr=*/attrType ==
+                                               AttrParamKind::UnwrappedValue);
 
-  auto numResults = op.getNumResults();
-  if (numResults == 0)
-    return;
+    auto numResults = op.getNumResults();
+    if (numResults == 0)
+      return;
 
-  // Push all result types to the operation state
-  const char *index = op.getOperand(0).isVariadic() ? ".front()" : "";
-  std::string resultType =
-      formatv("{0}{1}.getType()", getArgumentName(op, 0), index).str();
-  body << "  " << builderOpState << ".addTypes({" << resultType;
-  for (int i = 1; i != numResults; ++i)
-    body << ", " << resultType;
-  body << "});\n\n";
+    // Push all result types to the operation state
+    const char *index = op.getOperand(0).isVariadic() ? ".front()" : "";
+    std::string resultType =
+        formatv("{0}{1}.getType()", getArgumentName(op, 0), index).str();
+    body << "  " << builderOpState << ".addTypes({" << resultType;
+    for (int i = 1; i != numResults; ++i)
+      body << ", " << resultType;
+    body << "});\n\n";
+  };
+
+  emit(AttrParamKind::WrappedAttr);
+  // Generate additional builder(s) if any attributes can be "unwrapped"
+  if (canGenerateUnwrappedBuilder(op))
+    emit(AttrParamKind::UnwrappedValue);
 }
 
 void OpEmitter::genUseAttrAsResultTypeBuilder() {
@@ -1704,7 +1757,7 @@ void OpEmitter::genUseAttrAsResultTypeBuilder() {
   if (namedAttr.attr.isTypeAttr()) {
     resultType = "attr.getValue().cast<::mlir::TypeAttr>().getValue()";
   } else {
-    resultType = "attr.getValue().getType()";
+    resultType = "attr.getValue().cast<::mlir::TypedAttr>().getType()";
   }
 
   // Operands
@@ -1860,7 +1913,7 @@ void OpEmitter::buildParamList(SmallVectorImpl<MethodParameter> &paramList,
   auto numResults = op.getNumResults();
   resultTypeNames.reserve(numResults);
 
-  paramList.emplace_back("::mlir::OpBuilder &", "odsBuilder");
+  paramList.emplace_back("::mlir::OpBuilder &", odsBuilder);
   paramList.emplace_back("::mlir::OperationState &", builderOpState);
 
   switch (typeParamKind) {
@@ -2262,7 +2315,7 @@ void OpEmitter::genSideEffectInterfaceMethods() {
 
   for (auto &it : interfaceEffects) {
     // Generate the 'getEffects' method.
-    std::string type = llvm::formatv("::mlir::SmallVectorImpl<::mlir::"
+    std::string type = llvm::formatv("::llvm::SmallVectorImpl<::mlir::"
                                      "SideEffects::EffectInstance<{0}>> &",
                                      it.first())
                            .str();
@@ -2327,23 +2380,61 @@ void OpEmitter::genTypeInterfaceMethods() {
   fctx.withBuilder("odsBuilder");
   body << "  ::mlir::Builder odsBuilder(context);\n";
 
-  auto emitType = [&](const tblgen::Operator::ArgOrType &type) -> MethodBody & {
-    if (!type.isArg())
-      return body << tgfmt(*type.getType().getBuilderCall(), &fctx);
-    auto argIndex = type.getArg();
-    assert(!op.getArg(argIndex).is<NamedAttribute *>());
-    auto arg = op.getArgToOperandOrAttribute(argIndex);
-    if (arg.kind() == Operator::OperandOrAttribute::Kind::Operand)
-      return body << "operands[" << arg.operandOrAttributeIndex()
-                  << "].getType()";
-    return body << "attributes[" << arg.operandOrAttributeIndex()
-                << "].getType()";
-  };
-
+  // Preprocess the result types and build all of the types used during
+  // inferrence. This limits the amount of duplicated work when a type is used
+  // to infer multiple others.
+  llvm::DenseMap<Constraint, int> constraintsTypes;
+  llvm::DenseMap<int, int> argumentsTypes;
+  int inferredTypeIdx = 0;
   for (int i = 0, e = op.getNumResults(); i != e; ++i) {
-    body << "  inferredReturnTypes[" << i << "] = ";
+    auto type = op.getSameTypeAsResult(i).front();
+
+    // If the type isn't an argument, it refers to a buildable type.
+    if (!type.isArg()) {
+      auto it = constraintsTypes.try_emplace(type.getType(), inferredTypeIdx);
+      if (!it.second)
+        continue;
+
+      // If we haven't seen this constraint, generate a variable for it.
+      body << "  ::mlir::Type odsInferredType" << inferredTypeIdx++ << " = "
+           << tgfmt(*type.getType().getBuilderCall(), &fctx) << ";\n";
+      continue;
+    }
+
+    // Otherwise, this is an argument.
+    int argIndex = type.getArg();
+    auto it = argumentsTypes.try_emplace(argIndex, inferredTypeIdx);
+    if (!it.second)
+      continue;
+    body << "  ::mlir::Type odsInferredType" << inferredTypeIdx++ << " = ";
+
+    // If this is an operand, just index into operand list to access the type.
+    auto arg = op.getArgToOperandOrAttribute(argIndex);
+    if (arg.kind() == Operator::OperandOrAttribute::Kind::Operand) {
+      body << "operands[" << arg.operandOrAttributeIndex() << "].getType()";
+
+      // If this is an attribute, index into the attribute dictionary.
+    } else {
+      auto *attr =
+          op.getArg(arg.operandOrAttributeIndex()).get<NamedAttribute *>();
+      body << "attributes.get(\"" << attr->name
+           << "\").cast<::mlir::TypedAttr>().getType()";
+    }
+    body << ";\n";
+  }
+
+  // Perform a second pass that handles assigning the inferred types to the
+  // results.
+  for (int i = 0, e = op.getNumResults(); i != e; ++i) {
     auto types = op.getSameTypeAsResult(i);
-    emitType(types[0]) << ";\n";
+
+    // Append the inferred type.
+    auto type = types.front();
+    body << "  inferredReturnTypes[" << i << "] = odsInferredType"
+         << (type.isArg() ? argumentsTypes[type.getArg()]
+                          : constraintsTypes[type.getType()])
+         << ";\n";
+
     if (types.size() == 1)
       continue;
     // TODO: We could verify equality here, but skipping that for verification.
@@ -2601,7 +2692,7 @@ static void addSizeCountTrait(OpClass &opClass, StringRef traitKind,
   }
   switch (numTotal) {
   case 0:
-    opClass.addTrait("::mlir::OpTrait::Zero" + traitKind);
+    opClass.addTrait("::mlir::OpTrait::Zero" + traitKind + "s");
     break;
   case 1:
     opClass.addTrait("::mlir::OpTrait::One" + traitKind);
@@ -2641,26 +2732,7 @@ void OpEmitter::genTraits() {
   int numVariadicOperands = op.getNumVariableLengthOperands();
 
   // Add operand size trait.
-  if (numVariadicOperands != 0) {
-    if (numOperands == numVariadicOperands)
-      opClass.addTrait("::mlir::OpTrait::VariadicOperands");
-    else
-      opClass.addTrait("::mlir::OpTrait::AtLeastNOperands<" +
-                       Twine(numOperands - numVariadicOperands) + ">::Impl");
-  } else {
-    switch (numOperands) {
-    case 0:
-      opClass.addTrait("::mlir::OpTrait::ZeroOperands");
-      break;
-    case 1:
-      opClass.addTrait("::mlir::OpTrait::OneOperand");
-      break;
-    default:
-      opClass.addTrait("::mlir::OpTrait::NOperands<" + Twine(numOperands) +
-                       ">::Impl");
-      break;
-    }
-  }
+  addSizeCountTrait(opClass, "Operand", numOperands, numVariadicOperands);
 
   // The op traits defined internal are ensured that they can be verified
   // earlier.
@@ -2852,7 +2924,7 @@ OpOperandAdaptorEmitter::OpOperandAdaptorEmitter(
           tgfmt(attr.getConstBuilderTemplate(), &fctx, attr.getDefaultValue()));
       body << "  if (!attr)\n    attr = " << defaultValue << ";\n";
     }
-    body << "  return attr;\n";
+    body << "return attr;\n";
   };
 
   {

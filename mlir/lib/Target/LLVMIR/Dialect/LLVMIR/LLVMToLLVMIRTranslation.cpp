@@ -157,7 +157,6 @@ static llvm::FastMathFlags getFastmathFlags(FastmathFlagsInterface &op) {
       {FastmathFlags::contract, &llvmFMF::setAllowContract},
       {FastmathFlags::afn,      &llvmFMF::setApproxFunc},
       {FastmathFlags::reassoc,  &llvmFMF::setAllowReassoc},
-      {FastmathFlags::fast,     &llvmFMF::setFast},
       // clang-format on
   };
   llvm::FastMathFlags ret;
@@ -220,7 +219,7 @@ static void setLoopMetadata(Operation &opInst, llvm::Instruction &llvmInst,
       auto loopAttr = attr.cast<DictionaryAttr>();
       auto parallelAccessGroup =
           loopAttr.getNamed(LLVMDialect::getParallelAccessAttrName());
-      if (parallelAccessGroup.hasValue()) {
+      if (parallelAccessGroup) {
         SmallVector<llvm::Metadata *> parallelAccess;
         parallelAccess.push_back(
             llvm::MDString::get(ctx, "llvm.loop.parallel_accesses"));
@@ -316,7 +315,7 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
     }
     auto ft = LLVM::LLVMFunctionType::get(resultType, operandTypes);
     llvm::InlineAsm *inlineAsmInst =
-        inlineAsmOp.getAsmDialect().hasValue()
+        inlineAsmOp.getAsmDialect()
             ? llvm::InlineAsm::get(
                   static_cast<llvm::FunctionType *>(
                       moduleTranslation.convertType(ft)),
@@ -467,8 +466,10 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
   // operation and store it in the MLIR-to-LLVM value mapping.  This does not
   // emit any LLVM instruction.
   if (auto addressOfOp = dyn_cast<LLVM::AddressOfOp>(opInst)) {
-    LLVM::GlobalOp global = addressOfOp.getGlobal();
-    LLVM::LLVMFuncOp function = addressOfOp.getFunction();
+    LLVM::GlobalOp global =
+        addressOfOp.getGlobal(moduleTranslation.symbolTable());
+    LLVM::LLVMFuncOp function =
+        addressOfOp.getFunction(moduleTranslation.symbolTable());
 
     // The verifier should not have allowed this.
     assert((global || function) &&

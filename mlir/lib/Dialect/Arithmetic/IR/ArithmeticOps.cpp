@@ -94,10 +94,10 @@ void arith::ConstantOp::getAsmResultNames(
     if (intType && intType.getWidth() == 1)
       return setNameFn(getResult(), (intCst.getInt() ? "true" : "false"));
 
-    // Otherwise, build a compex name with the value and type.
+    // Otherwise, build a complex name with the value and type.
     SmallString<32> specialNameBuffer;
     llvm::raw_svector_ostream specialName(specialNameBuffer);
-    specialName << 'c' << intCst.getInt();
+    specialName << 'c' << intCst.getValue();
     if (intType)
       specialName << '_' << type;
     setNameFn(getResult(), specialName.str());
@@ -128,7 +128,8 @@ LogicalResult arith::ConstantOp::verify() {
 
 bool arith::ConstantOp::isBuildableWith(Attribute value, Type type) {
   // The value's type must be the same as the provided type.
-  if (value.getType() != type)
+  auto typedAttr = value.dyn_cast<TypedAttr>();
+  if (!typedAttr || typedAttr.getType() != type)
     return false;
   // Integer values must be signless.
   if (type.isa<IntegerType>() && !type.cast<IntegerType>().isSignless())
@@ -209,8 +210,8 @@ OpFoldResult arith::AddIOp::fold(ArrayRef<Attribute> operands) {
       operands, [](APInt a, const APInt &b) { return std::move(a) + b; });
 }
 
-void arith::AddIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::AddIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
   patterns.add<AddIAddConstant, AddISubConstantRHS, AddISubConstantLHS>(
       context);
 }
@@ -231,8 +232,8 @@ OpFoldResult arith::SubIOp::fold(ArrayRef<Attribute> operands) {
       operands, [](APInt a, const APInt &b) { return std::move(a) - b; });
 }
 
-void arith::SubIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::SubIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
   patterns
       .add<SubIRHSAddConstant, SubILHSAddConstant, SubIRHSSubConstantRHS,
            SubIRHSSubConstantLHS, SubILHSSubConstantRHS, SubILHSSubConstantLHS>(
@@ -262,6 +263,10 @@ OpFoldResult arith::MulIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::DivUIOp::fold(ArrayRef<Attribute> operands) {
+  // divui (x, 1) -> x.
+  if (matchPattern(getRhs(), m_One()))
+    return getLhs();
+
   // Don't fold if it would require a division by zero.
   bool div0 = false;
   auto result =
@@ -273,15 +278,6 @@ OpFoldResult arith::DivUIOp::fold(ArrayRef<Attribute> operands) {
         return a.udiv(b);
       });
 
-  // Fold out division by one. Assumes all tensors of all ones are splats.
-  if (auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>()) {
-    if (rhs.getValue() == 1)
-      return getLhs();
-  } else if (auto rhs = operands[1].dyn_cast_or_null<SplatElementsAttr>()) {
-    if (rhs.getSplatValue<IntegerAttr>().getValue() == 1)
-      return getLhs();
-  }
-
   return div0 ? Attribute() : result;
 }
 
@@ -290,6 +286,10 @@ OpFoldResult arith::DivUIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::DivSIOp::fold(ArrayRef<Attribute> operands) {
+  // divsi (x, 1) -> x.
+  if (matchPattern(getRhs(), m_One()))
+    return getLhs();
+
   // Don't fold if it would overflow or if it requires a division by zero.
   bool overflowOrDiv0 = false;
   auto result =
@@ -300,15 +300,6 @@ OpFoldResult arith::DivSIOp::fold(ArrayRef<Attribute> operands) {
         }
         return a.sdiv_ov(b, overflowOrDiv0);
       });
-
-  // Fold out division by one. Assumes all tensors of all ones are splats.
-  if (auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>()) {
-    if (rhs.getValue() == 1)
-      return getLhs();
-  } else if (auto rhs = operands[1].dyn_cast_or_null<SplatElementsAttr>()) {
-    if (rhs.getSplatValue<IntegerAttr>().getValue() == 1)
-      return getLhs();
-  }
 
   return overflowOrDiv0 ? Attribute() : result;
 }
@@ -330,6 +321,10 @@ static APInt signedCeilNonnegInputs(const APInt &a, const APInt &b,
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::CeilDivUIOp::fold(ArrayRef<Attribute> operands) {
+  // ceildivui (x, 1) -> x.
+  if (matchPattern(getRhs(), m_One()))
+    return getLhs();
+
   bool overflowOrDiv0 = false;
   auto result =
       constFoldBinaryOp<IntegerAttr>(operands, [&](APInt a, const APInt &b) {
@@ -343,15 +338,6 @@ OpFoldResult arith::CeilDivUIOp::fold(ArrayRef<Attribute> operands) {
         APInt one(a.getBitWidth(), 1, true);
         return quotient.uadd_ov(one, overflowOrDiv0);
       });
-  // Fold out ceil division by one. Assumes all tensors of all ones are
-  // splats.
-  if (auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>()) {
-    if (rhs.getValue() == 1)
-      return getLhs();
-  } else if (auto rhs = operands[1].dyn_cast_or_null<SplatElementsAttr>()) {
-    if (rhs.getSplatValue<IntegerAttr>().getValue() == 1)
-      return getLhs();
-  }
 
   return overflowOrDiv0 ? Attribute() : result;
 }
@@ -361,6 +347,10 @@ OpFoldResult arith::CeilDivUIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::CeilDivSIOp::fold(ArrayRef<Attribute> operands) {
+  // ceildivsi (x, 1) -> x.
+  if (matchPattern(getRhs(), m_One()))
+    return getLhs();
+
   // Don't fold if it would overflow or if it requires a division by zero.
   bool overflowOrDiv0 = false;
   auto result =
@@ -398,16 +388,6 @@ OpFoldResult arith::CeilDivSIOp::fold(ArrayRef<Attribute> operands) {
         return zero.ssub_ov(div, overflowOrDiv0);
       });
 
-  // Fold out ceil division by one. Assumes all tensors of all ones are
-  // splats.
-  if (auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>()) {
-    if (rhs.getValue() == 1)
-      return getLhs();
-  } else if (auto rhs = operands[1].dyn_cast_or_null<SplatElementsAttr>()) {
-    if (rhs.getSplatValue<IntegerAttr>().getValue() == 1)
-      return getLhs();
-  }
-
   return overflowOrDiv0 ? Attribute() : result;
 }
 
@@ -416,6 +396,10 @@ OpFoldResult arith::CeilDivSIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::FloorDivSIOp::fold(ArrayRef<Attribute> operands) {
+  // floordivsi (x, 1) -> x.
+  if (matchPattern(getRhs(), m_One()))
+    return getLhs();
+
   // Don't fold if it would overflow or if it requires a division by zero.
   bool overflowOrDiv0 = false;
   auto result =
@@ -453,16 +437,6 @@ OpFoldResult arith::FloorDivSIOp::fold(ArrayRef<Attribute> operands) {
         return zero.ssub_ov(ceil, overflowOrDiv0);
       });
 
-  // Fold out floor division by one. Assumes all tensors of all ones are
-  // splats.
-  if (auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>()) {
-    if (rhs.getValue() == 1)
-      return getLhs();
-  } else if (auto rhs = operands[1].dyn_cast_or_null<SplatElementsAttr>()) {
-    if (rhs.getSplatValue<IntegerAttr>().getValue() == 1)
-      return getLhs();
-  }
-
   return overflowOrDiv0 ? Attribute() : result;
 }
 
@@ -471,23 +445,22 @@ OpFoldResult arith::FloorDivSIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::RemUIOp::fold(ArrayRef<Attribute> operands) {
-  auto rhs = operands.back().dyn_cast_or_null<IntegerAttr>();
-  if (!rhs)
-    return {};
-  auto rhsValue = rhs.getValue();
+  // remui (x, 1) -> 0.
+  if (matchPattern(getRhs(), m_One()))
+    return Builder(getContext()).getZeroAttr(getType());
 
-  // x % 1 = 0
-  if (rhsValue.isOneValue())
-    return IntegerAttr::get(rhs.getType(), APInt(rhsValue.getBitWidth(), 0));
+  // Don't fold if it would require a division by zero.
+  bool div0 = false;
+  auto result =
+      constFoldBinaryOp<IntegerAttr>(operands, [&](APInt a, const APInt &b) {
+        if (div0 || b.isNullValue()) {
+          div0 = true;
+          return a;
+        }
+        return a.urem(b);
+      });
 
-  // Don't fold if it requires division by zero.
-  if (rhsValue.isNullValue())
-    return {};
-
-  auto lhs = operands.front().dyn_cast_or_null<IntegerAttr>();
-  if (!lhs)
-    return {};
-  return IntegerAttr::get(lhs.getType(), lhs.getValue().urem(rhsValue));
+  return div0 ? Attribute() : result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -495,23 +468,22 @@ OpFoldResult arith::RemUIOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::RemSIOp::fold(ArrayRef<Attribute> operands) {
-  auto rhs = operands.back().dyn_cast_or_null<IntegerAttr>();
-  if (!rhs)
-    return {};
-  auto rhsValue = rhs.getValue();
+  // remsi (x, 1) -> 0.
+  if (matchPattern(getRhs(), m_One()))
+    return Builder(getContext()).getZeroAttr(getType());
 
-  // x % 1 = 0
-  if (rhsValue.isOneValue())
-    return IntegerAttr::get(rhs.getType(), APInt(rhsValue.getBitWidth(), 0));
+  // Don't fold if it would require a division by zero.
+  bool div0 = false;
+  auto result =
+      constFoldBinaryOp<IntegerAttr>(operands, [&](APInt a, const APInt &b) {
+        if (div0 || b.isNullValue()) {
+          div0 = true;
+          return a;
+        }
+        return a.srem(b);
+      });
 
-  // Don't fold if it requires division by zero.
-  if (rhsValue.isNullValue())
-    return {};
-
-  auto lhs = operands.front().dyn_cast_or_null<IntegerAttr>();
-  if (!lhs)
-    return {};
-  return IntegerAttr::get(lhs.getType(), lhs.getValue().srem(rhsValue));
+  return div0 ? Attribute() : result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -568,8 +540,8 @@ OpFoldResult arith::XOrIOp::fold(ArrayRef<Attribute> operands) {
       operands, [](APInt a, const APInt &b) { return std::move(a) ^ b; });
 }
 
-void arith::XOrIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::XOrIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
   patterns.add<XOrINotCmpI>(context);
 }
 
@@ -578,6 +550,9 @@ void arith::XOrIOp::getCanonicalizationPatterns(
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::NegFOp::fold(ArrayRef<Attribute> operands) {
+  /// negf(negf(x)) -> x
+  if (auto op = this->getOperand().getDefiningOp<arith::NegFOp>())
+    return op.getOperand();
   return constFoldUnaryOp<FloatAttr>(operands,
                                      [](const APFloat &a) { return -a; });
 }
@@ -769,6 +744,11 @@ OpFoldResult arith::MulFOp::fold(ArrayRef<Attribute> operands) {
       operands, [](const APFloat &a, const APFloat &b) { return a * b; });
 }
 
+void arith::MulFOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
+  patterns.add<MulFOfNegF>(context);
+}
+
 //===----------------------------------------------------------------------===//
 // DivFOp
 //===----------------------------------------------------------------------===//
@@ -780,6 +760,24 @@ OpFoldResult arith::DivFOp::fold(ArrayRef<Attribute> operands) {
 
   return constFoldBinaryOp<FloatAttr>(
       operands, [](const APFloat &a, const APFloat &b) { return a / b; });
+}
+
+void arith::DivFOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
+  patterns.add<DivFOfNegF>(context);
+}
+
+//===----------------------------------------------------------------------===//
+// RemFOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult arith::RemFOp::fold(ArrayRef<Attribute> operands) {
+  return constFoldBinaryOp<FloatAttr>(operands,
+                                      [](const APFloat &a, const APFloat &b) {
+                                        APFloat result(a);
+                                        (void)result.remainder(b);
+                                        return result;
+                                      });
 }
 
 //===----------------------------------------------------------------------===//
@@ -924,8 +922,8 @@ bool arith::ExtSIOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   return checkWidthChangeCast<std::greater, IntegerType>(inputs, outputs);
 }
 
-void arith::ExtSIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::ExtSIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
   patterns.add<ExtSIOfExtUI>(context);
 }
 
@@ -1020,8 +1018,8 @@ LogicalResult arith::TruncFOp::verify() {
 // AndIOp
 //===----------------------------------------------------------------------===//
 
-void arith::AndIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::AndIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
   patterns.add<AndOfExtUI, AndOfExtSI>(context);
 }
 
@@ -1029,8 +1027,8 @@ void arith::AndIOp::getCanonicalizationPatterns(
 // OrIOp
 //===----------------------------------------------------------------------===//
 
-void arith::OrIOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::OrIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
   patterns.add<OrOfExtUI, OrOfExtSI>(context);
 }
 
@@ -1229,8 +1227,8 @@ OpFoldResult arith::BitcastOp::fold(ArrayRef<Attribute> operands) {
   return IntegerAttr::get(resType, bits);
 }
 
-void arith::BitcastOp::getCanonicalizationPatterns(
-    RewritePatternSet &patterns, MLIRContext *context) {
+void arith::BitcastOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                   MLIRContext *context) {
   patterns.add<BitcastOfBitcast>(context);
 }
 
@@ -1322,27 +1320,50 @@ OpFoldResult arith::CmpIOp::fold(ArrayRef<Attribute> operands) {
 
   if (matchPattern(getRhs(), m_Zero())) {
     if (auto extOp = getLhs().getDefiningOp<ExtSIOp>()) {
-      if (extOp.getOperand().getType().cast<IntegerType>().getWidth() == 1) {
-        // extsi(%x : i1 -> iN) != 0  ->  %x
-        if (getPredicate() == arith::CmpIPredicate::ne) {
-          return extOp.getOperand();
-        }
-      }
+      // extsi(%x : i1 -> iN) != 0  ->  %x
+      if (extOp.getOperand().getType().cast<IntegerType>().getWidth() == 1 &&
+          getPredicate() == arith::CmpIPredicate::ne)
+        return extOp.getOperand();
     }
     if (auto extOp = getLhs().getDefiningOp<ExtUIOp>()) {
-      if (extOp.getOperand().getType().cast<IntegerType>().getWidth() == 1) {
-        // extui(%x : i1 -> iN) != 0  ->  %x
-        if (getPredicate() == arith::CmpIPredicate::ne) {
-          return extOp.getOperand();
-        }
-      }
+      // extui(%x : i1 -> iN) != 0  ->  %x
+      if (extOp.getOperand().getType().cast<IntegerType>().getWidth() == 1 &&
+          getPredicate() == arith::CmpIPredicate::ne)
+        return extOp.getOperand();
     }
   }
 
+  // Move constant to the right side.
+  if (operands[0] && !operands[1]) {
+    // Do not use invertPredicate, as it will change eq to ne and vice versa.
+    using Pred = CmpIPredicate;
+    const std::pair<Pred, Pred> invPreds[] = {
+        {Pred::slt, Pred::sgt}, {Pred::sgt, Pred::slt}, {Pred::sle, Pred::sge},
+        {Pred::sge, Pred::sle}, {Pred::ult, Pred::ugt}, {Pred::ugt, Pred::ult},
+        {Pred::ule, Pred::uge}, {Pred::uge, Pred::ule}, {Pred::eq, Pred::eq},
+        {Pred::ne, Pred::ne},
+    };
+    Pred origPred = getPredicate();
+    for (auto pred : invPreds) {
+      if (origPred == pred.first) {
+        setPredicateAttr(CmpIPredicateAttr::get(getContext(), pred.second));
+        Value lhs = getLhs();
+        Value rhs = getRhs();
+        getLhsMutable().assign(rhs);
+        getRhsMutable().assign(lhs);
+        return getResult();
+      }
+    }
+    llvm_unreachable("unknown cmpi predicate kind");
+  }
+
   auto lhs = operands.front().dyn_cast_or_null<IntegerAttr>();
-  auto rhs = operands.back().dyn_cast_or_null<IntegerAttr>();
-  if (!lhs || !rhs)
+  if (!lhs)
     return {};
+
+  // We are moving constants to the right side; So if lhs is constant rhs is
+  // guaranteed to be a constant.
+  auto rhs = operands.back().cast<IntegerAttr>();
 
   auto val = applyCmpPredicate(getPredicate(), lhs.getValue(), rhs.getValue());
   return BoolAttr::get(getContext(), val);
@@ -1759,24 +1780,24 @@ struct SelectToExtUI : public OpRewritePattern<arith::SelectOp> {
       return failure();
 
     // select %x, c1, %c0 => extui %arg
-    if (matchPattern(op.getTrueValue(), m_One()))
-      if (matchPattern(op.getFalseValue(), m_Zero())) {
-        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, op.getType(),
-                                                    op.getCondition());
-        return success();
-      }
+    if (matchPattern(op.getTrueValue(), m_One()) &&
+        matchPattern(op.getFalseValue(), m_Zero())) {
+      rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, op.getType(),
+                                                  op.getCondition());
+      return success();
+    }
 
     // select %x, c0, %c1 => extui (xor %arg, true)
-    if (matchPattern(op.getTrueValue(), m_Zero()))
-      if (matchPattern(op.getFalseValue(), m_One())) {
-        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(
-            op, op.getType(),
-            rewriter.create<arith::XOrIOp>(
-                op.getLoc(), op.getCondition(),
-                rewriter.create<arith::ConstantIntOp>(
-                    op.getLoc(), 1, op.getCondition().getType())));
-        return success();
-      }
+    if (matchPattern(op.getTrueValue(), m_Zero()) &&
+        matchPattern(op.getFalseValue(), m_One())) {
+      rewriter.replaceOpWithNewOp<arith::ExtUIOp>(
+          op, op.getType(),
+          rewriter.create<arith::XOrIOp>(
+              op.getLoc(), op.getCondition(),
+              rewriter.create<arith::ConstantIntOp>(
+                  op.getLoc(), 1, op.getCondition().getType())));
+      return success();
+    }
 
     return failure();
   }
@@ -1804,10 +1825,9 @@ OpFoldResult arith::SelectOp::fold(ArrayRef<Attribute> operands) {
     return falseVal;
 
   // select %x, true, false => %x
-  if (getType().isInteger(1))
-    if (matchPattern(getTrueValue(), m_One()))
-      if (matchPattern(getFalseValue(), m_Zero()))
-        return condition;
+  if (getType().isInteger(1) && matchPattern(getTrueValue(), m_One()) &&
+      matchPattern(getFalseValue(), m_Zero()))
+    return condition;
 
   if (auto cmp = dyn_cast_or_null<arith::CmpIOp>(condition.getDefiningOp())) {
     auto pred = cmp.getPredicate();

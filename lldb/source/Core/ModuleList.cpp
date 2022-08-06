@@ -180,6 +180,12 @@ PathMappingList ModuleListProperties::GetSymlinkMappings() const {
   return m_symlink_paths;
 }
 
+bool ModuleListProperties::GetLoadSymbolOnDemand() {
+  const uint32_t idx = ePropertyLoadSymbolOnDemand;
+  return m_collection_sp->GetPropertyAtIndexAsBoolean(
+      nullptr, idx, g_modulelist_properties[idx].default_uint_value != 0);
+}
+
 ModuleList::ModuleList() : m_modules(), m_modules_mutex() {}
 
 ModuleList::ModuleList(const ModuleList &rhs) : m_modules(), m_modules_mutex() {
@@ -419,9 +425,8 @@ void ModuleList::FindFunctions(ConstString name,
 
     std::lock_guard<std::recursive_mutex> guard(m_modules_mutex);
     for (const ModuleSP &module_sp : m_modules) {
-      module_sp->FindFunctions(lookup_info.GetLookupName(),
-                               CompilerDeclContext(),
-                               lookup_info.GetNameTypeMask(), options, sc_list);
+      module_sp->FindFunctions(lookup_info, CompilerDeclContext(), options,
+                               sc_list);
     }
 
     const size_t new_size = sc_list.GetSize();

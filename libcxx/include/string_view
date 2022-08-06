@@ -14,6 +14,8 @@
 
     string_view synopsis
 
+#include <compare>
+
 namespace std {
 
     // 7.2, Class template basic_string_view
@@ -30,21 +32,25 @@ namespace std {
     template<class charT, class traits>
     constexpr bool operator==(basic_string_view<charT, traits> x,
                               basic_string_view<charT, traits> y) noexcept;
-    template<class charT, class traits>
+    template<class charT, class traits>                                                            // Removed in C++20
     constexpr bool operator!=(basic_string_view<charT, traits> x,
                               basic_string_view<charT, traits> y) noexcept;
-    template<class charT, class traits>
+    template<class charT, class traits>                                                            // Removed in C++20
     constexpr bool operator< (basic_string_view<charT, traits> x,
                                  basic_string_view<charT, traits> y) noexcept;
-    template<class charT, class traits>
+    template<class charT, class traits>                                                            // Removed in C++20
     constexpr bool operator> (basic_string_view<charT, traits> x,
                               basic_string_view<charT, traits> y) noexcept;
-    template<class charT, class traits>
+    template<class charT, class traits>                                                            // Removed in C++20
     constexpr bool operator<=(basic_string_view<charT, traits> x,
                                  basic_string_view<charT, traits> y) noexcept;
-    template<class charT, class traits>
+    template<class charT, class traits>                                                            // Removed in C++20
     constexpr bool operator>=(basic_string_view<charT, traits> x,
                               basic_string_view<charT, traits> y) noexcept;
+    template<class charT, class traits>                                                            // Since C++20
+    constexpr see below operator<=>(basic_string_view<charT, traits> x,
+                                    basic_string_view<charT, traits> y) noexcept;
+
     // see below, sufficient additional overloads of comparison functions
 
     // 7.10, Inserters and extractors
@@ -199,19 +205,42 @@ namespace std {
 #include <__algorithm/min.h>
 #include <__assert> // all public C++ headers provide the assertion handler
 #include <__config>
+#include <__functional/hash.h>
+#include <__functional/unary_function.h>
+#include <__fwd/string_view.h>
+#include <__iterator/concepts.h>
+#include <__iterator/readable_traits.h>
+#include <__iterator/reverse_iterator.h>
+#include <__memory/pointer_traits.h>
 #include <__ranges/concepts.h>
 #include <__ranges/data.h>
 #include <__ranges/enable_borrowed_range.h>
 #include <__ranges/enable_view.h>
 #include <__ranges/size.h>
-#include <__string>
-#include <compare>
+#include <__string/char_traits.h>
 #include <iosfwd>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <version>
+
+#ifndef _LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+#  include <algorithm>
+#  include <functional>
+#  include <iterator>
+#endif
+
+// standard-mandated includes
+
+// [iterator.range]
+#include <__iterator/access.h>
+#include <__iterator/data.h>
+#include <__iterator/empty.h>
+#include <__iterator/reverse_access.h>
+#include <__iterator/size.h>
+
+// [string.view.synop]
+#include <compare>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -222,19 +251,6 @@ _LIBCPP_PUSH_MACROS
 
 
 _LIBCPP_BEGIN_NAMESPACE_STD
-
-template<class _CharT, class _Traits = char_traits<_CharT> >
-    class _LIBCPP_TEMPLATE_VIS basic_string_view;
-
-typedef basic_string_view<char>     string_view;
-#ifndef _LIBCPP_HAS_NO_CHAR8_T
-typedef basic_string_view<char8_t>  u8string_view;
-#endif
-typedef basic_string_view<char16_t> u16string_view;
-typedef basic_string_view<char32_t> u32string_view;
-#ifndef _LIBCPP_HAS_NO_WIDE_CHARACTERS
-typedef basic_string_view<wchar_t>  wstring_view;
-#endif
 
 // TODO: This is a workaround for some vendors to carry a downstream diff to accept `nullptr` in
 //       string_view constructors. This can be refactored when this exact form isn't needed anymore.
@@ -314,14 +330,14 @@ public:
         ranges::sized_range<_Range> &&
         is_same_v<ranges::range_value_t<_Range>, _CharT> &&
         !is_convertible_v<_Range, const _CharT*> &&
-        (!requires(remove_cvref_t<_Range>& d) {
-          d.operator _VSTD::basic_string_view<_CharT, _Traits>();
+        (!requires(remove_cvref_t<_Range>& __d) {
+          __d.operator _VSTD::basic_string_view<_CharT, _Traits>();
         }) &&
         (!requires {
          typename remove_reference_t<_Range>::traits_type;
         } || is_same_v<typename remove_reference_t<_Range>::traits_type, _Traits>)
       )
-    constexpr _LIBCPP_HIDE_FROM_ABI
+    constexpr explicit _LIBCPP_HIDE_FROM_ABI
     basic_string_view(_Range&& __r) : __data(ranges::data(__r)), __size(ranges::size(__r)) {}
 #endif // _LIBCPP_STD_VER > 20 && !defined(_LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
@@ -760,6 +776,8 @@ bool operator==(basic_string_view<_CharT, _Traits> __lhs,
     return __lhs.compare(__rhs) == 0;
 }
 
+#if _LIBCPP_STD_VER < 20
+// This overload is automatically generated in C++20.
 template<class _CharT, class _Traits, int = 2>
 _LIBCPP_CONSTEXPR_AFTER_CXX11 _LIBCPP_INLINE_VISIBILITY
 bool operator==(typename common_type<basic_string_view<_CharT, _Traits> >::type __lhs,
@@ -768,7 +786,41 @@ bool operator==(typename common_type<basic_string_view<_CharT, _Traits> >::type 
     if ( __lhs.size() != __rhs.size()) return false;
     return __lhs.compare(__rhs) == 0;
 }
+#endif // _LIBCPP_STD_VER > 17
 
+// operator <=>
+
+#if _LIBCPP_STD_VER > 17
+
+template <class _CharT, class _Traits>
+_LIBCPP_HIDE_FROM_ABI constexpr auto
+operator<=>(basic_string_view<_CharT, _Traits> __lhs, basic_string_view<_CharT, _Traits> __rhs) noexcept {
+    if constexpr (requires { typename _Traits::comparison_category; }) {
+        // [string.view]/4
+        static_assert(
+            __comparison_category<typename _Traits::comparison_category>,
+            "return type is not a comparison category type");
+        return static_cast<typename _Traits::comparison_category>(__lhs.compare(__rhs) <=> 0);
+    } else {
+        return static_cast<weak_ordering>(__lhs.compare(__rhs) <=> 0);
+    }
+}
+
+template <class _CharT, class _Traits, int = 1>
+_LIBCPP_HIDE_FROM_ABI constexpr auto operator<=>(
+    basic_string_view<_CharT, _Traits> __lhs, common_type_t<basic_string_view<_CharT, _Traits>> __rhs) noexcept {
+    if constexpr (requires { typename _Traits::comparison_category; }) {
+        // [string.view]/4
+        static_assert(
+            __comparison_category<typename _Traits::comparison_category>,
+            "return type is not a comparison category type");
+        return static_cast<typename _Traits::comparison_category>(__lhs.compare(__rhs) <=> 0);
+    } else {
+        return static_cast<weak_ordering>(__lhs.compare(__rhs) <=> 0);
+    }
+}
+
+#else //  _LIBCPP_STD_VER > 17
 
 // operator !=
 template<class _CharT, class _Traits>
@@ -901,6 +953,7 @@ bool operator>=(typename common_type<basic_string_view<_CharT, _Traits> >::type 
     return __lhs.compare(__rhs) >= 0;
 }
 
+#endif //  _LIBCPP_STD_VER > 17
 
 template<class _CharT, class _Traits>
 basic_ostream<_CharT, _Traits>&
@@ -910,14 +963,13 @@ operator<<(basic_ostream<_CharT, _Traits>& __os,
 // [string.view.hash]
 template<class _CharT>
 struct _LIBCPP_TEMPLATE_VIS hash<basic_string_view<_CharT, char_traits<_CharT> > >
-    : public unary_function<basic_string_view<_CharT, char_traits<_CharT> >, size_t>
+    : public __unary_function<basic_string_view<_CharT, char_traits<_CharT> >, size_t>
 {
     _LIBCPP_INLINE_VISIBILITY
     size_t operator()(const basic_string_view<_CharT, char_traits<_CharT> > __val) const _NOEXCEPT {
         return __do_string_hash(__val.data(), __val.data() + __val.size());
     }
 };
-
 
 #if _LIBCPP_STD_VER > 11
 inline namespace literals
