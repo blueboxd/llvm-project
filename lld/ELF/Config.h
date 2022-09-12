@@ -19,6 +19,7 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/CachePruning.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/Compression.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -26,8 +27,7 @@
 #include <memory>
 #include <vector>
 
-namespace lld {
-namespace elf {
+namespace lld::elf {
 
 class InputFile;
 class BinaryFile;
@@ -165,7 +165,7 @@ struct Configuration {
   bool callGraphProfileSort;
   bool checkSections;
   bool checkDynamicRelocs;
-  bool compressDebugSections;
+  llvm::DebugCompressionType compressDebugSections;
   bool cref;
   llvm::SmallVector<std::pair<llvm::GlobPattern, uint64_t>, 0>
       deadRelocInNonAlloc;
@@ -291,6 +291,7 @@ struct Configuration {
   StringRef thinLTOJobs;
   unsigned timeTraceGranularity;
   int32_t splitStackAdjustSize;
+  StringRef packageMetadata;
 
   // The following config options do not directly correspond to any
   // particular command line options.
@@ -418,7 +419,6 @@ static inline void internalLinkerError(StringRef loc, const Twine &msg) {
               llvm::getBugReportMsg());
 }
 
-} // namespace elf
-} // namespace lld
+} // namespace lld::elf
 
 #endif

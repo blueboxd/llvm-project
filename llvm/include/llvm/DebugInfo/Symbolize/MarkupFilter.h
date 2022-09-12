@@ -71,6 +71,15 @@ private:
     SmallVector<const MMap *> MMaps = {};
   };
 
+  // The semantics of a possible program counter value.
+  enum class PCType {
+    // The address is a return address and must be adjusted to point to the call
+    // itself.
+    ReturnAddress,
+    // The address is the precise location in the code and needs no adjustment.
+    PreciseCode,
+  };
+
   bool tryContextualElement(const MarkupNode &Node,
                             const SmallVector<MarkupNode> &DeferredNodes);
   bool tryMMap(const MarkupNode &Element,
@@ -87,6 +96,8 @@ private:
 
   bool tryPresentation(const MarkupNode &Node);
   bool trySymbol(const MarkupNode &Node);
+  bool tryPC(const MarkupNode &Node);
+  bool tryBackTrace(const MarkupNode &Node);
   bool tryData(const MarkupNode &Node);
 
   bool trySGR(const MarkupNode &Node);
@@ -96,6 +107,9 @@ private:
   void restoreColor();
   void resetColor();
 
+  void printRawElement(const MarkupNode &Element);
+  void printValue(Twine Value);
+
   Optional<Module> parseModule(const MarkupNode &Element) const;
   Optional<MMap> parseMMap(const MarkupNode &Element) const;
 
@@ -104,16 +118,21 @@ private:
   Optional<uint64_t> parseSize(StringRef Str) const;
   Optional<SmallVector<uint8_t>> parseBuildID(StringRef Str) const;
   Optional<std::string> parseMode(StringRef Str) const;
+  Optional<PCType> parsePCType(StringRef Str) const;
+  Optional<uint64_t> parseFrameNumber(StringRef Str) const;
 
   bool checkTag(const MarkupNode &Node) const;
   bool checkNumFields(const MarkupNode &Element, size_t Size) const;
   bool checkNumFieldsAtLeast(const MarkupNode &Element, size_t Size) const;
+  bool checkNumFieldsAtMost(const MarkupNode &Element, size_t Size) const;
 
   void reportTypeError(StringRef Str, StringRef TypeName) const;
   void reportLocation(StringRef::iterator Loc) const;
 
   const MMap *getOverlappingMMap(const MMap &Map) const;
   const MMap *getContainingMMap(uint64_t Addr) const;
+
+  uint64_t adjustAddr(uint64_t Addr, PCType Type) const;
 
   StringRef lineEnding() const;
 

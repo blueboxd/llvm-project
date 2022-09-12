@@ -62,6 +62,11 @@ and there is no way to suppress this error.
 Changes to the LLVM IR
 ----------------------
 
+* The constant expression variants of the following instructions have been
+  removed:
+
+  * ``fneg``
+
 Changes to building LLVM
 ------------------------
 
@@ -76,6 +81,10 @@ Changes to the AMDGPU Backend
 
 Changes to the ARM Backend
 --------------------------
+
+* Support for targeting armv2, armv2A, armv3 and armv3M has been removed.
+  LLVM did not, and was not ever likely to generate correct code for those
+  architecture versions so their presence was misleading.
 
 Changes to the AVR Backend
 --------------------------
@@ -108,6 +117,14 @@ Changes to the WebAssembly Backend
 
 * ...
 
+Changes to the Windows Target
+-----------------------------
+
+* For MinGW, generate embedded ``-exclude-symbols:`` directives for symbols
+  with hidden visibility, omitting them from automatic export of all symbols.
+  This roughly makes hidden visibility work like it does for other object
+  file formats.
+
 Changes to the X86 Backend
 --------------------------
 
@@ -117,6 +134,13 @@ Changes to the OCaml bindings
 
 Changes to the C API
 --------------------
+
+* The following functions for creating constant expressions have been removed,
+  because the underlying constant expressions are no longer supported. Instead,
+  an instruction should be created using the ``LLVMBuildXYZ`` APIs, which will
+  constant fold the operands if possible and create an instruction otherwise:
+
+  * ``LLVMConstFNeg``
 
 Changes to the Go bindings
 --------------------------

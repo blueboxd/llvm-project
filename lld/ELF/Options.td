@@ -60,7 +60,7 @@ defm check_sections: B<"check-sections",
 
 defm compress_debug_sections:
   Eq<"compress-debug-sections", "Compress DWARF debug sections">,
-  MetaVarName<"[none,zlib]">;
+  MetaVarName<"[none,zlib,zstd]">;
 
 defm defsym: Eq<"defsym", "Define a symbol alias">, MetaVarName<"<symbol>=<value>">;
 
@@ -502,6 +502,8 @@ def z: JoinedOrSeparate<["-"], "z">, MetaVarName<"<option>">,
 
 def visual_studio_diagnostics_format : FF<"vs-diagnostics">,
 HelpText<"Format diagnostics for Visual Studio compatibility">;
+
+def package_metadata: JJ<"package-metadata=">, HelpText<"Emit package metadata note">;
 
 // Aliases
 def: Separate<["-"], "f">, Alias<auxiliary>, HelpText<"Alias for --auxiliary">;

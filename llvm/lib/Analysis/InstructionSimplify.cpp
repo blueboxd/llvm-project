@@ -1252,12 +1252,14 @@ static bool isPoisonShift(Value *Amount, const SimplifyQuery &Q) {
   if (Q.isUndefValue(C))
     return true;
 
-  // Shifting by the bitwidth or more is undefined.
-  if (ConstantInt *CI = dyn_cast<ConstantInt>(C))
-    if (CI->getValue().uge(CI->getType()->getScalarSizeInBits()))
-      return true;
+  // Shifting by the bitwidth or more is poison. This covers scalars and
+  // fixed/scalable vectors with splat constants.
+  const APInt *AmountC;
+  if (match(C, m_APInt(AmountC)) && AmountC->uge(AmountC->getBitWidth()))
+    return true;
 
-  // If all lanes of a vector shift are undefined the whole shift is.
+  // Try harder for fixed-length vectors:
+  // If all lanes of a vector shift are poison, the whole shift is poison.
   if (isa<ConstantVector>(C) || isa<ConstantDataVector>(C)) {
     for (unsigned I = 0,
                   E = cast<FixedVectorType>(C->getType())->getNumElements();
@@ -2181,10 +2183,10 @@ static Value *simplifyAndInst(Value *Op0, Value *Op1, const SimplifyQuery &Q,
     }
     if (Optional<bool> Implied = isImpliedCondition(Op1, Op0, Q.DL)) {
       // If Op1 is true implies Op0 is true, then Op1 is a subset of Op0.
-      if (Implied.getValue())
+      if (Implied.value())
         return Op1;
       // If Op1 is true implies Op0 is false, then they are not true together.
-      if (!Implied.getValue())
+      if (!Implied.value())
         return ConstantInt::getFalse(Op1->getType());
     }
   }
@@ -2660,7 +2662,7 @@ static Constant *computePointerICmp(CmpInst::Predicate Pred, Value *LHS,
   default:
     return nullptr;
 
-    // Equality comaprisons are easy to fold.
+    // Equality comparisons are easy to fold.
   case CmpInst::ICMP_EQ:
   case CmpInst::ICMP_NE:
     break;
@@ -2866,6 +2868,11 @@ static Value *simplifyICmpOfBools(CmpInst::Predicate Pred, Value *LHS,
     if (isImpliedCondition(LHS, RHS, Q.DL).value_or(false))
       return getTrue(ITy);
     break;
+  case ICmpInst::ICMP_SLE:
+    /// SLE follows the same logic as SGE with the LHS and RHS swapped.
+    if (isImpliedCondition(RHS, LHS, Q.DL).value_or(false))
+      return getTrue(ITy);
+    break;
   }
 
   return nullptr;
@@ -3025,7 +3032,7 @@ static Value *simplifyICmpWithBinOpOnLHS(CmpInst::Predicate Pred,
       KnownBits Known = computeKnownBits(RHS, Q.DL, 0, Q.AC, Q.CxtI, Q.DT);
       if (!Known.isNonNegative())
         break;
-      LLVM_FALLTHROUGH;
+      [[fallthrough]];
     }
     case ICmpInst::ICMP_EQ:
     case ICmpInst::ICMP_UGT:
@@ -3036,7 +3043,7 @@ static Value *simplifyICmpWithBinOpOnLHS(CmpInst::Predicate Pred,
       KnownBits Known = computeKnownBits(RHS, Q.DL, 0, Q.AC, Q.CxtI, Q.DT);
       if (!Known.isNonNegative())
         break;
-      LLVM_FALLTHROUGH;
+      [[fallthrough]];
     }
     case ICmpInst::ICMP_NE:
     case ICmpInst::ICMP_ULT:
@@ -3118,6 +3125,12 @@ static Value *simplifyICmpWithBinOpOnLHS(CmpInst::Predicate Pred,
     if (Pred == ICmpInst::ICMP_ULE)
       return getTrue(ITy);
   }
+
+  // (sub C, X) == X, C is odd  --> false
+  // (sub C, X) != X, C is odd  --> true
+  if (match(LBO, m_Sub(m_APIntAllowUndef(C), m_Specific(RHS))) &&
+      (*C & 1) == 1 && ICmpInst::isEquality(Pred))
+    return (Pred == ICmpInst::ICMP_EQ) ? getFalse(ITy) : getTrue(ITy);
 
   return nullptr;
 }
@@ -4990,7 +5003,7 @@ static Value *simplifyShuffleVectorInst(Value *Op0, Value *Op1,
   // value type is same as the input vectors' type.
   if (auto *OpShuf = dyn_cast<ShuffleVectorInst>(Op0))
     if (Q.isUndefValue(Op1) && RetTy == InVecTy &&
-        is_splat(OpShuf->getShuffleMask()))
+        all_equal(OpShuf->getShuffleMask()))
       return Op0;
 
   // All remaining transformation depend on the value of the mask, which is
@@ -5198,15 +5211,16 @@ simplifyFSubInst(Value *Op0, Value *Op1, FastMathFlags FMF,
     if (match(Op0, m_NegZeroFP()) && match(Op1, m_FNeg(m_Value(X))))
       return X;
 
-  if (!isDefaultFPEnvironment(ExBehavior, Rounding))
-    return nullptr;
-
   // fsub 0.0, (fsub 0.0, X) ==> X if signed zeros are ignored.
   // fsub 0.0, (fneg X) ==> X if signed zeros are ignored.
-  if (FMF.noSignedZeros() && match(Op0, m_AnyZeroFP()) &&
-      (match(Op1, m_FSub(m_AnyZeroFP(), m_Value(X))) ||
-       match(Op1, m_FNeg(m_Value(X)))))
-    return X;
+  if (canIgnoreSNaN(ExBehavior, FMF))
+    if (FMF.noSignedZeros() && match(Op0, m_AnyZeroFP()) &&
+        (match(Op1, m_FSub(m_AnyZeroFP(), m_Value(X))) ||
+         match(Op1, m_FNeg(m_Value(X)))))
+      return X;
+
+  if (!isDefaultFPEnvironment(ExBehavior, Rounding))
+    return nullptr;
 
   // fsub nnan x, x ==> 0.0
   if (FMF.noNaNs() && Op0 == Op1)
@@ -5867,7 +5881,7 @@ static Value *simplifyBinaryIntrinsic(Function *F, Value *Op0, Value *Op1,
     // sat(X + MAX) -> MAX
     if (match(Op0, m_AllOnes()) || match(Op1, m_AllOnes()))
       return Constant::getAllOnesValue(ReturnType);
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case Intrinsic::sadd_sat:
     // sat(X + undef) -> -1
     // sat(undef + X) -> -1
@@ -5887,7 +5901,7 @@ static Value *simplifyBinaryIntrinsic(Function *F, Value *Op0, Value *Op1,
     // sat(0 - X) -> 0, sat(X - MAX) -> 0
     if (match(Op0, m_Zero()) || match(Op1, m_AllOnes()))
       return Constant::getNullValue(ReturnType);
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case Intrinsic::ssub_sat:
     // X - X -> 0, X - undef -> 0, undef - X -> 0
     if (Op0 == Op1 || Q.isUndefValue(Op0) || Q.isUndefValue(Op1))

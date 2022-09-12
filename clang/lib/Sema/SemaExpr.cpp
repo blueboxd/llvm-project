@@ -136,7 +136,7 @@ void Sema::NoteDeletedFunction(FunctionDecl *Decl) {
 /// Determine whether a FunctionDecl was ever declared with an
 /// explicit storage class.
 static bool hasAnyExplicitStorageClass(const FunctionDecl *D) {
-  for (auto I : D->redecls()) {
+  for (auto *I : D->redecls()) {
     if (I->getStorageClass() != SC_None)
       return true;
   }
@@ -976,7 +976,7 @@ void Sema::checkVariadicArgument(const Expr *E, VariadicCallType CT) {
     DiagRuntimeBehavior(
         E->getBeginLoc(), nullptr,
         PDiag(diag::warn_cxx98_compat_pass_non_pod_arg_to_vararg) << Ty << CT);
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case VAK_Valid:
     if (Ty->isRecordType()) {
       // This is unlikely to be what the user intended. If the class has a
@@ -2946,7 +2946,7 @@ ExprResult Sema::BuildIvarRefExpr(Scope *S, SourceLocation Loc,
         !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, Loc))
       getCurFunction()->recordUseOfWeak(Result);
   }
-  if (getLangOpts().ObjCAutoRefCount)
+  if (getLangOpts().ObjCAutoRefCount && !isUnevaluatedContext())
     if (const BlockDecl *BD = CurContext->getInnermostBlockDecl())
       ImplicitlyRetainedSelfLocs.push_back({Loc, BD});
 
@@ -3391,7 +3391,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
       valueKind = VK_PRValue;
       break;
     }
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
 
   case Decl::ImplicitParam:
   case Decl::ParmVar: {
@@ -3488,7 +3488,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
       valueKind = VK_LValue;
       break;
     }
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
 
   case Decl::CXXConversion:
   case Decl::CXXDestructor:
@@ -13957,8 +13957,10 @@ QualType Sema::CheckAssignmentOperands(Expr *LHSExpr, ExprResult &RHS,
   return getLangOpts().CPlusPlus ? LHSType : LHSType.getAtomicUnqualifiedType();
 }
 
-// Only ignore explicit casts to void.
-static bool IgnoreCommaOperand(const Expr *E) {
+// Scenarios to ignore if expression E is:
+// 1. an explicit cast expression into void
+// 2. a function call expression that returns void
+static bool IgnoreCommaOperand(const Expr *E, const ASTContext &Context) {
   E = E->IgnoreParens();
 
   if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
@@ -13973,6 +13975,8 @@ static bool IgnoreCommaOperand(const Expr *E) {
     }
   }
 
+  if (const auto *CE = dyn_cast<CallExpr>(E))
+    return CE->getCallReturnType(Context)->isVoidType();
   return false;
 }
 
@@ -14014,7 +14018,7 @@ void Sema::DiagnoseCommaOperator(const Expr *LHS, SourceLocation Loc) {
   }
 
   // Only allow some expressions on LHS to not warn.
-  if (IgnoreCommaOperand(LHS))
+  if (IgnoreCommaOperand(LHS, Context))
     return;
 
   Diag(Loc, diag::warn_comma_operator);
@@ -14961,7 +14965,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     break;
   case BO_And:
     checkObjCPointerIntrospection(*this, LHS, RHS, OpLoc);
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case BO_Xor:
   case BO_Or:
     ResultTy = CheckBitwiseOperands(LHS, RHS, OpLoc, Opc);
@@ -15013,7 +15017,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
   case BO_AndAssign:
   case BO_OrAssign: // fallthrough
     DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc, true);
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case BO_XorAssign:
     CompResultTy = CheckBitwiseOperands(LHS, RHS, OpLoc, Opc);
     CompLHSTy = CompResultTy;
@@ -15595,6 +15599,8 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
              (!Context.getLangOpts().ZVector ||
               resultType->castAs<VectorType>()->getVectorKind() !=
               VectorType::AltiVecBool))
+      break;
+    else if (resultType->isVLSTBuiltinType()) // SVE vectors allow + and -
       break;
     else if (getLangOpts().CPlusPlus && // C++ [expr.unary.op]p6
              Opc == UO_Plus &&
@@ -16283,7 +16289,7 @@ void Sema::ActOnBlockArguments(SourceLocation CaretLoc, Declarator &ParamInfo,
   ProcessDeclAttributes(CurScope, CurBlock->TheDecl, ParamInfo);
 
   // Put the parameter variables in scope.
-  for (auto AI : CurBlock->TheDecl->parameters()) {
+  for (auto *AI : CurBlock->TheDecl->parameters()) {
     AI->setOwningFunction(CurBlock->TheDecl);
 
     // If this has an identifier, add it to the scope stack.
@@ -17592,6 +17598,11 @@ static void RemoveNestedImmediateInvocation(
       DRSet.erase(E);
       return E;
     }
+    ExprResult TransformLambdaExpr(LambdaExpr *E) {
+      // Do not rebuild lambdas to avoid creating a new type.
+      // Lambdas have already been processed inside their eval context.
+      return E;
+    }
     bool AlwaysRebuild() { return false; }
     bool ReplacingOriginal() { return true; }
     bool AllowSkippingCXXConstructExpr() {
@@ -17659,7 +17670,7 @@ HandleImmediateInvocations(Sema &SemaRef,
   for (auto CE : Rec.ImmediateInvocationCandidates)
     if (!CE.getInt())
       EvaluateAndDiagnoseImmediateInvocation(SemaRef, CE);
-  for (auto DR : Rec.ReferenceToConsteval) {
+  for (auto *DR : Rec.ReferenceToConsteval) {
     auto *FD = cast<FunctionDecl>(DR->getDecl());
     SemaRef.Diag(DR->getBeginLoc(), diag::err_invalid_consteval_take_address)
         << FD;
@@ -18100,7 +18111,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
         }
       } else {
         // Walk redefinitions, as some of them may be instantiable.
-        for (auto i : Func->redecls()) {
+        for (auto *i : Func->redecls()) {
           if (!i->isUsed(false) && i->isImplicitlyInstantiable())
             MarkFunctionReferenced(Loc, i, MightBeOdrUse);
         }
@@ -19669,7 +19680,8 @@ void Sema::MarkDeclRefReferenced(DeclRefExpr *E, const Expr *Base) {
 
   if (auto *FD = dyn_cast<FunctionDecl>(E->getDecl()))
     if (!isUnevaluatedContext() && !isConstantEvaluated() &&
-        FD->isConsteval() && !RebuildingImmediateInvocation)
+        !isImmediateFunctionContext() && FD->isConsteval() &&
+        !RebuildingImmediateInvocation && !FD->isDependentContext())
       ExprEvalContexts.back().ReferenceToConsteval.insert(E);
   MarkExprReferenced(*this, E->getLocation(), E->getDecl(), E, OdrUse,
                      RefsMinusAssignments);

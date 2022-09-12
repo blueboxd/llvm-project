@@ -7,15 +7,23 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/ArithmeticToSPIRV/ArithmeticToSPIRV.h"
-#include "../PassDetail.h"
+
 #include "../SPIRVCommon/Pattern.h"
 #include "mlir/Conversion/FuncToSPIRV/FuncToSPIRV.h"
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVTypes.h"
 #include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Debug.h"
+
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTARITHMETICTOSPIRV
+#include "mlir/Conversion/Passes.h.inc"
+} // namespace mlir
 
 #define DEBUG_TYPE "arith-to-spirv-pattern"
 
@@ -192,12 +200,32 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+/// Converts arith.addui_carry to spv.IAddCarry.
+class AddICarryOpPattern final
+    : public OpConversionPattern<arith::AddUICarryOp> {
+public:
+  using OpConversionPattern<arith::AddUICarryOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(arith::AddUICarryOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
 /// Converts arith.select to spv.Select.
 class SelectOpPattern final : public OpConversionPattern<arith::SelectOp> {
 public:
   using OpConversionPattern<arith::SelectOp>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+/// Converts arith.maxf to spv.GL.FMax.
+template <typename Op, typename SPIRVOp>
+class MinMaxFOpPattern final : public OpConversionPattern<Op> {
+public:
+  using OpConversionPattern<Op>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 };
 
@@ -821,15 +849,52 @@ LogicalResult CmpFOpNanNonePattern::matchAndRewrite(
     return failure();
 
   Location loc = op.getLoc();
+  auto *converter = getTypeConverter<SPIRVTypeConverter>();
 
-  Value lhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getLhs());
-  Value rhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getRhs());
+  Value replace;
+  if (converter->getOptions().enableFastMathMode) {
+    if (op.getPredicate() == arith::CmpFPredicate::ORD) {
+      // Ordered comparsion checks if neither operand is NaN.
+      replace = spirv::ConstantOp::getOne(op.getType(), loc, rewriter);
+    } else {
+      // Unordered comparsion checks if either operand is NaN.
+      replace = spirv::ConstantOp::getZero(op.getType(), loc, rewriter);
+    }
+  } else {
+    Value lhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getLhs());
+    Value rhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getRhs());
 
-  Value replace = rewriter.create<spirv::LogicalOrOp>(loc, lhsIsNan, rhsIsNan);
-  if (op.getPredicate() == arith::CmpFPredicate::ORD)
-    replace = rewriter.create<spirv::LogicalNotOp>(loc, replace);
+    replace = rewriter.create<spirv::LogicalOrOp>(loc, lhsIsNan, rhsIsNan);
+    if (op.getPredicate() == arith::CmpFPredicate::ORD)
+      replace = rewriter.create<spirv::LogicalNotOp>(loc, replace);
+  }
 
   rewriter.replaceOp(op, replace);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// AddICarryOpPattern
+//===----------------------------------------------------------------------===//
+
+LogicalResult
+AddICarryOpPattern::matchAndRewrite(arith::AddUICarryOp op, OpAdaptor adaptor,
+                                    ConversionPatternRewriter &rewriter) const {
+  Type dstElemTy = adaptor.getLhs().getType();
+  Location loc = op->getLoc();
+  Value result = rewriter.create<spirv::IAddCarryOp>(loc, adaptor.getLhs(),
+                                                     adaptor.getRhs());
+
+  Value sumResult = rewriter.create<spirv::CompositeExtractOp>(
+      loc, result, llvm::makeArrayRef(0));
+  Value carryValue = rewriter.create<spirv::CompositeExtractOp>(
+      loc, result, llvm::makeArrayRef(1));
+
+  // Convert the carry value to boolean.
+  Value one = spirv::ConstantOp::getOne(dstElemTy, loc, rewriter);
+  Value carryResult = rewriter.create<spirv::IEqualOp>(loc, carryValue, one);
+
+  rewriter.replaceOp(op, {sumResult, carryResult});
   return success();
 }
 
@@ -843,6 +908,45 @@ SelectOpPattern::matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
   rewriter.replaceOpWithNewOp<spirv::SelectOp>(op, adaptor.getCondition(),
                                                adaptor.getTrueValue(),
                                                adaptor.getFalseValue());
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MaxFOpPattern
+//===----------------------------------------------------------------------===//
+
+template <typename Op, typename SPIRVOp>
+LogicalResult MinMaxFOpPattern<Op, SPIRVOp>::matchAndRewrite(
+    Op op, typename Op::Adaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto *converter = this->template getTypeConverter<SPIRVTypeConverter>();
+  auto dstType = converter->convertType(op.getType());
+  if (!dstType)
+    return failure();
+
+  // arith.maxf/minf:
+  //   "if one of the arguments is NaN, then the result is also NaN."
+  // spv.GL.FMax/FMin:
+  //   "which operand is the result is undefined if one of the operands
+  //   is a NaN."
+
+  Location loc = op.getLoc();
+  Value spirvOp = rewriter.create<SPIRVOp>(loc, dstType, adaptor.getOperands());
+
+  if (converter->getOptions().enableFastMathMode) {
+    rewriter.replaceOp(op, spirvOp);
+    return success();
+  }
+
+  Value lhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getLhs());
+  Value rhsIsNan = rewriter.create<spirv::IsNanOp>(loc, adaptor.getRhs());
+
+  Value select1 = rewriter.create<spirv::SelectOp>(loc, dstType, lhsIsNan,
+                                                   adaptor.getLhs(), spirvOp);
+  Value select2 = rewriter.create<spirv::SelectOp>(loc, dstType, rhsIsNan,
+                                                   adaptor.getRhs(), select1);
+
+  rewriter.replaceOp(op, select2);
   return success();
 }
 
@@ -887,12 +991,12 @@ void mlir::arith::populateArithmeticToSPIRVPatterns(
     TypeCastingOpPattern<arith::BitcastOp, spirv::BitcastOp>,
     CmpIOpBooleanPattern, CmpIOpPattern,
     CmpFOpNanNonePattern, CmpFOpPattern,
-    SelectOpPattern,
+    AddICarryOpPattern, SelectOpPattern,
 
-    spirv::ElementwiseOpPattern<arith::MaxFOp, spirv::GLFMaxOp>,
+    MinMaxFOpPattern<arith::MaxFOp, spirv::GLFMaxOp>,
+    MinMaxFOpPattern<arith::MinFOp, spirv::GLFMinOp>,
     spirv::ElementwiseOpPattern<arith::MaxSIOp, spirv::GLSMaxOp>,
     spirv::ElementwiseOpPattern<arith::MaxUIOp, spirv::GLUMaxOp>,
-    spirv::ElementwiseOpPattern<arith::MinFOp, spirv::GLFMinOp>,
     spirv::ElementwiseOpPattern<arith::MinSIOp, spirv::GLSMinOp>,
     spirv::ElementwiseOpPattern<arith::MinUIOp, spirv::GLUMinOp>
   >(typeConverter, patterns.getContext());
@@ -910,14 +1014,15 @@ void mlir::arith::populateArithmeticToSPIRVPatterns(
 
 namespace {
 struct ConvertArithmeticToSPIRVPass
-    : public ConvertArithmeticToSPIRVBase<ConvertArithmeticToSPIRVPass> {
+    : public impl::ConvertArithmeticToSPIRVBase<ConvertArithmeticToSPIRVPass> {
   void runOnOperation() override {
-    auto module = getOperation();
-    auto targetAttr = spirv::lookupTargetEnvOrDefault(module);
+    Operation *op = getOperation();
+    auto targetAttr = spirv::lookupTargetEnvOrDefault(op);
     auto target = SPIRVConversionTarget::get(targetAttr);
 
-    SPIRVTypeConverter::Options options;
+    SPIRVConversionOptions options;
     options.emulateNon32BitScalarTypes = this->emulateNon32BitScalarTypes;
+    options.enableFastMathMode = this->enableFastMath;
     SPIRVTypeConverter typeConverter(targetAttr, options);
 
     // Use UnrealizedConversionCast as the bridge so that we don't need to pull
@@ -934,12 +1039,13 @@ struct ConvertArithmeticToSPIRVPass
     RewritePatternSet patterns(&getContext());
     arith::populateArithmeticToSPIRVPatterns(typeConverter, patterns);
 
-    if (failed(applyPartialConversion(module, *target, std::move(patterns))))
+    if (failed(applyPartialConversion(op, *target, std::move(patterns))))
       signalPassFailure();
   }
 };
 } // namespace
 
-std::unique_ptr<Pass> mlir::arith::createConvertArithmeticToSPIRVPass() {
+std::unique_ptr<OperationPass<>>
+mlir::arith::createConvertArithmeticToSPIRVPass() {
   return std::make_unique<ConvertArithmeticToSPIRVPass>();
 }

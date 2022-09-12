@@ -47,7 +47,23 @@ stages there is no ABI stability in any form.
 .. toctree::
    :hidden:
    :maxdepth: 1
-   :caption: Documentation
+   :caption: Using
+
+   runtimes_build
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+   :caption: Status
+
+   strings
+   stdio
+   math
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+   :caption: Development
 
    build_system
    clang_tidy_checks
@@ -61,10 +77,6 @@ stages there is no ABI stability in any form.
    mechanics_of_public_api
    redirectors
    source_layout
-   strings
-   runtimes_build
-   stdio
-   math
 
 .. toctree::
    :hidden:
@@ -72,4 +84,5 @@ stages there is no ABI stability in any form.
    :caption: External Links
 
    Source Code <https://github.com/llvm/llvm-project/tree/main/libc>
-   Bug Reports <https://github.com/llvm/llvm-project/issues/labels/libc/>
+   Bug Reports <https://github.com/llvm/llvm-project/labels/libc>
+   Buildbot <https://lab.llvm.org/buildbot/#/builders?tags=libc>

@@ -589,6 +589,33 @@ define i32 @select_andor(i32 %v1, i32 %v2, i32 %v3) {
   ret i32 %sel
 }
 
+define i32 @select_andor32(i32 %v1, i32 %v2, i32 %v3) {
+; SDISEL-LABEL: select_andor32:
+; SDISEL:       ; %bb.0:
+; SDISEL-NEXT:    cmp w1, w2
+; SDISEL-NEXT:    mov w8, #32
+; SDISEL-NEXT:    ccmp w0, w8, #4, lt
+; SDISEL-NEXT:    ccmp w0, w1, #0, eq
+; SDISEL-NEXT:    csel w0, w0, w1, eq
+; SDISEL-NEXT:    ret
+;
+; GISEL-LABEL: select_andor32:
+; GISEL:       ; %bb.0:
+; GISEL-NEXT:    mov w8, #32
+; GISEL-NEXT:    cmp w1, w2
+; GISEL-NEXT:    ccmp w0, w8, #4, lt
+; GISEL-NEXT:    ccmp w0, w1, #0, eq
+; GISEL-NEXT:    csel w0, w0, w1, eq
+; GISEL-NEXT:    ret
+  %c0 = icmp eq i32 %v1, %v2
+  %c1 = icmp sge i32 %v2, %v3
+  %c2 = icmp eq i32 %v1, 32
+  %or = or i1 %c2, %c1
+  %and = and i1 %or, %c0
+  %sel = select i1 %and, i32 %v1, i32 %v2
+  ret i32 %sel
+}
+
 define i64 @select_noccmp1(i64 %v1, i64 %v2, i64 %v3, i64 %r) {
 ; SDISEL-LABEL: select_noccmp1:
 ; SDISEL:       ; %bb.0:

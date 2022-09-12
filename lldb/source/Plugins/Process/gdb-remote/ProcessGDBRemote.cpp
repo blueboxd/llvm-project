@@ -193,14 +193,13 @@ void ProcessGDBRemote::Terminate() {
   PluginManager::UnregisterPlugin(ProcessGDBRemote::CreateInstance);
 }
 
-lldb::ProcessSP
-ProcessGDBRemote::CreateInstance(lldb::TargetSP target_sp,
-                                 ListenerSP listener_sp,
-                                 const FileSpec *crash_file_path,
-                                 bool can_connect) {
+lldb::ProcessSP ProcessGDBRemote::CreateInstance(
+    lldb::TargetSP target_sp, ListenerSP listener_sp,
+    const FileSpec *crash_file_path, bool can_connect) {
   lldb::ProcessSP process_sp;
   if (crash_file_path == nullptr)
-    process_sp = std::make_shared<ProcessGDBRemote>(target_sp, listener_sp);
+    process_sp = std::shared_ptr<ProcessGDBRemote>(
+        new ProcessGDBRemote(target_sp, listener_sp));
   return process_sp;
 }
 
@@ -283,14 +282,6 @@ ProcessGDBRemote::ProcessGDBRemote(lldb::TargetSP target_sp,
     LLDB_LOGF(log,
               "ProcessGDBRemote::%s failed to listen for "
               "m_async_broadcaster events",
-              __FUNCTION__);
-  }
-
-  const uint32_t gdb_event_mask = Communication::eBroadcastBitReadThreadDidExit;
-  if (m_async_listener_sp->StartListeningForEvents(
-          &m_gdb_comm, gdb_event_mask) != gdb_event_mask) {
-    LLDB_LOGF(log,
-              "ProcessGDBRemote::%s failed to listen for m_gdb_comm events",
               __FUNCTION__);
   }
 
@@ -602,8 +593,19 @@ Status ProcessGDBRemote::DoConnectRemote(llvm::StringRef remote_url) {
         UUID uuid;
         const bool value_is_slide = false;
         for (addr_t addr : bin_addrs) {
-          const bool force_symbol_search = true;
           const bool notify = true;
+          // First see if this is a special platform
+          // binary that may determine the DynamicLoader and
+          // Platform to be used in this Process/Target in the
+          // process of loading it.
+          if (GetTarget()
+                  .GetDebugger()
+                  .GetPlatformList()
+                  .LoadPlatformBinaryAndSetup(this, addr, notify))
+            continue;
+
+          const bool force_symbol_search = true;
+          // Second manually load this binary into the Target.
           DynamicLoader::LoadBinaryWithUUIDAndAddress(
               this, uuid, addr, value_is_slide, force_symbol_search, notify);
         }
@@ -1177,7 +1179,7 @@ Status ProcessGDBRemote::DoResume() {
   ListenerSP listener_sp(
       Listener::MakeListener("gdb-remote.resume-packet-sent"));
   if (listener_sp->StartListeningForEvents(
-          &m_gdb_comm, GDBRemoteCommunication::eBroadcastBitRunPacketSent)) {
+          &m_gdb_comm, GDBRemoteClientBase::eBroadcastBitRunPacketSent)) {
     listener_sp->StartListeningForEvents(
         &m_async_broadcaster,
         ProcessGDBRemote::eBroadcastBitAsyncThreadDidExit);
@@ -1187,11 +1189,18 @@ Status ProcessGDBRemote::DoResume() {
     StreamString continue_packet;
     bool continue_packet_error = false;
     if (m_gdb_comm.HasAnyVContSupport()) {
+      std::string pid_prefix;
+      if (m_gdb_comm.GetMultiprocessSupported())
+        pid_prefix = llvm::formatv("p{0:x-}.", GetID());
+
       if (m_continue_c_tids.size() == num_threads ||
           (m_continue_c_tids.empty() && m_continue_C_tids.empty() &&
            m_continue_s_tids.empty() && m_continue_S_tids.empty())) {
-        // All threads are continuing, just send a "c" packet
-        continue_packet.PutCString("c");
+        // All threads are continuing
+        if (m_gdb_comm.GetMultiprocessSupported())
+          continue_packet.Format("vCont;c:{0}-1", pid_prefix);
+        else
+          continue_packet.PutCString("c");
       } else {
         continue_packet.PutCString("vCont");
 
@@ -1201,7 +1210,7 @@ Status ProcessGDBRemote::DoResume() {
                      t_pos = m_continue_c_tids.begin(),
                      t_end = m_continue_c_tids.end();
                  t_pos != t_end; ++t_pos)
-              continue_packet.Printf(";c:%4.4" PRIx64, *t_pos);
+              continue_packet.Format(";c:{0}{1:x-}", pid_prefix, *t_pos);
           } else
             continue_packet_error = true;
         }
@@ -1212,8 +1221,8 @@ Status ProcessGDBRemote::DoResume() {
                      s_pos = m_continue_C_tids.begin(),
                      s_end = m_continue_C_tids.end();
                  s_pos != s_end; ++s_pos)
-              continue_packet.Printf(";C%2.2x:%4.4" PRIx64, s_pos->second,
-                                     s_pos->first);
+              continue_packet.Format(";C{0:x-2}:{1}{2:x-}", s_pos->second,
+                                     pid_prefix, s_pos->first);
           } else
             continue_packet_error = true;
         }
@@ -1224,7 +1233,7 @@ Status ProcessGDBRemote::DoResume() {
                      t_pos = m_continue_s_tids.begin(),
                      t_end = m_continue_s_tids.end();
                  t_pos != t_end; ++t_pos)
-              continue_packet.Printf(";s:%4.4" PRIx64, *t_pos);
+              continue_packet.Format(";s:{0}{1:x-}", pid_prefix, *t_pos);
           } else
             continue_packet_error = true;
         }
@@ -1235,8 +1244,8 @@ Status ProcessGDBRemote::DoResume() {
                      s_pos = m_continue_S_tids.begin(),
                      s_end = m_continue_S_tids.end();
                  s_pos != s_end; ++s_pos)
-              continue_packet.Printf(";S%2.2x:%4.4" PRIx64, s_pos->second,
-                                     s_pos->first);
+              continue_packet.Format(";S{0:x-2}:{1}{2:x-}", s_pos->second,
+                                     pid_prefix, s_pos->first);
           } else
             continue_packet_error = true;
         }
@@ -2874,7 +2883,7 @@ size_t ProcessGDBRemote::PutSTDIN(const char *src, size_t src_len,
                                   Status &error) {
   if (m_stdio_communication.IsConnected()) {
     ConnectionStatus status;
-    m_stdio_communication.Write(src, src_len, status, nullptr);
+    m_stdio_communication.WriteAll(src, src_len, status, nullptr);
   } else if (m_stdin_forward) {
     m_gdb_comm.SendStdinNotification(src, src_len);
   }
@@ -3558,21 +3567,6 @@ thread_result_t ProcessGDBRemote::AsyncThread() {
                     "ProcessGDBRemote::%s(pid = %" PRIu64
                     ") got eBroadcastBitAsyncThreadShouldExit...",
                     __FUNCTION__, GetID());
-          done = true;
-          break;
-
-        default:
-          LLDB_LOGF(log,
-                    "ProcessGDBRemote::%s(pid = %" PRIu64
-                    ") got unknown event 0x%8.8x",
-                    __FUNCTION__, GetID(), event_type);
-          done = true;
-          break;
-        }
-      } else if (event_sp->BroadcasterIs(&m_gdb_comm)) {
-        switch (event_type) {
-        case Communication::eBroadcastBitReadThreadDidExit:
-          SetExitStatus(-1, "lost connection");
           done = true;
           break;
 

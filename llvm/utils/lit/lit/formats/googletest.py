@@ -112,8 +112,8 @@ class GoogleTest(TestFormat):
         shard_env = {
             'GTEST_OUTPUT': 'json:' + test.gtest_json_file,
             'GTEST_SHUFFLE': '1' if use_shuffle else '0',
-            'GTEST_TOTAL_SHARDS': total_shards,
-            'GTEST_SHARD_INDEX': shard_idx
+            'GTEST_TOTAL_SHARDS': os.environ.get("GTEST_TOTAL_SHARDS", total_shards),
+            'GTEST_SHARD_INDEX': os.environ.get("GTEST_SHARD_INDEX", shard_idx)
         }
         test.config.environment.update(shard_env)
 
@@ -239,7 +239,11 @@ class GoogleTest(TestFormat):
 
             # Load json file to retrieve results.
             with open(test.gtest_json_file, encoding='utf-8') as f:
-                testsuites = json.load(f)['testsuites']
+                try:
+                    testsuites = json.load(f)['testsuites']
+                except json.JSONDecodeError as e:
+                    raise RuntimeError("Failed to parse json file: " +
+                                       test.gtest_json_file + "\n" + e.doc)
                 for testcase in testsuites:
                     for testinfo in testcase['testsuite']:
                         # Ignore disabled tests.
